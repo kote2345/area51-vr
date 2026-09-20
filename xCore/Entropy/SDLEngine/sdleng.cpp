@@ -24,6 +24,72 @@
 
 SDL_GPUDevice*  g_pSDLGPUDevice = NULL;
 
+static sdleng_vulkan_device_info s_ExternalVulkanDevice;
+static xbool s_bExternalVulkanDevice = FALSE;
+
+xbool sdleng_SetVulkanExternalDevice( const sdleng_vulkan_device_info& Info )
+{
+    if( !Info.Instance || !Info.PhysicalDevice || !Info.Device ||
+        !Info.Queue )
+    {
+        return FALSE;
+    }
+
+    s_ExternalVulkanDevice = Info;
+    s_bExternalVulkanDevice = TRUE;
+    return TRUE;
+}
+
+void sdleng_ClearVulkanExternalDevice( void )
+{
+    s_ExternalVulkanDevice = sdleng_vulkan_device_info();
+    s_bExternalVulkanDevice = FALSE;
+}
+
+xbool sdleng_HasVulkanExternalDevice( void )
+{
+    return s_bExternalVulkanDevice;
+}
+
+xbool sdleng_GetVulkanDeviceInfo( sdleng_vulkan_device_info& Info )
+{
+    SDL_GPUVulkanDeviceInfo SDLInfo;
+    if( !g_pSDLGPUDevice ||
+        !SDL_GetGPUVulkanDeviceInfo( g_pSDLGPUDevice, &SDLInfo ) )
+    {
+        return FALSE;
+    }
+
+    Info.Instance          = SDLInfo.instance;
+    Info.PhysicalDevice    = SDLInfo.physical_device;
+    Info.Device            = SDLInfo.device;
+    Info.Queue             = SDLInfo.queue;
+    Info.QueueFamilyIndex  = SDLInfo.queue_family_index;
+    Info.RenderWidth       = 0;
+    Info.RenderHeight      = 0;
+    return TRUE;
+}
+
+xbool sdleng_GetVulkanFrameInfo( sdleng_vulkan_frame_info& Info )
+{
+    SDL_GPUVulkanFrameInfo SDLInfo;
+    if( !g_pSDLGPUDevice || !sdleng_GetCommandBuffer() ||
+        !sdleng_GetSwapchainTexture() ||
+        !SDL_GetGPUVulkanFrameInfo( g_pSDLGPUDevice,
+                                    sdleng_GetCommandBuffer(),
+                                    sdleng_GetSwapchainTexture(),
+                                    &SDLInfo ) )
+    {
+        return FALSE;
+    }
+
+    Info.CommandBuffer = SDLInfo.command_buffer;
+    Info.SourceImage   = SDLInfo.source_image;
+    Info.Width         = SDLInfo.width;
+    Info.Height        = SDLInfo.height;
+    return TRUE;
+}
+
 //==============================================================================
 //  LOCAL STORAGE
 //==============================================================================
@@ -40,9 +106,12 @@ static struct sdleng_locals
     SDL_GPUCommandBuffer*       pCommandBuffer;
     SDL_GPURenderPass*          pRenderPass;
     SDL_GPUTexture*             pSwapchainTexture;
+    SDL_GPUTexture*             pNativeXRBackBuffers[2];
     SDL_GPUTextureFormat        SwapchainFormat;
     u32                         BackBufferWidth;
     u32                         BackBufferHeight;
+    u32                         NativeXRWidth;
+    u32                         NativeXRHeight;
     u32                         AcquiredWidth;
     u32                         AcquiredHeight;
     sdleng_present_policy       PresentPolicy;
@@ -57,7 +126,74 @@ static struct sdleng_locals
     xbool                       bSwapchainAcquired;
     xbool                       bBackBufferRendered;
     xbool                       bSwapchainAcquireLogged;
+    xbool                       bNativeXRBackBuffer;
+    u32                         NativeXREye;
+    void*                       NativeXRSourceImages[2];
 } s;
+
+xbool sdleng_GetVulkanFrameInfoForEye( u32 Eye,
+                                       sdleng_vulkan_frame_info& Info )
+{
+    if( Eye >= 2 || !g_pSDLGPUDevice || !sdleng_GetCommandBuffer() )
+        return FALSE;
+
+    SDL_GPUTexture* pTexture = s.pNativeXRBackBuffers[Eye];
+    if( !pTexture )
+        return FALSE;
+
+    SDL_GPUVulkanFrameInfo SDLInfo;
+    if( !SDL_GetGPUVulkanFrameInfo( g_pSDLGPUDevice,
+                                    sdleng_GetCommandBuffer(),
+                                    pTexture,
+                                    &SDLInfo ) )
+    {
+        return FALSE;
+    }
+
+    Info.CommandBuffer = SDLInfo.command_buffer;
+    Info.SourceImage   = s.NativeXRSourceImages[Eye]
+                       ? s.NativeXRSourceImages[Eye]
+                       : SDLInfo.source_image;
+    Info.Width         = s.NativeXRSourceImages[Eye] ? s.NativeXRWidth  : SDLInfo.width;
+    Info.Height        = s.NativeXRSourceImages[Eye] ? s.NativeXRHeight : SDLInfo.height;
+    return TRUE;
+}
+
+xbool sdleng_SetVulkanRenderEye( u32 Eye )
+{
+    if( !s.bNativeXRBackBuffer || Eye >= 2 ||
+        !s.pCommandBuffer || s.pRenderPass ||
+        !s.pNativeXRBackBuffers[Eye] )
+    {
+        return FALSE;
+    }
+
+    s.NativeXREye       = Eye;
+    s.pSwapchainTexture = s.pNativeXRBackBuffers[Eye];
+    s.AcquiredWidth     = s.NativeXRWidth;
+    s.AcquiredHeight    = s.NativeXRHeight;
+    s.BackBufferWidth   = s.NativeXRWidth;
+    s.BackBufferHeight  = s.NativeXRHeight;
+    SDL_GPUVulkanFrameInfo SDLInfo;
+    if( !SDL_GetGPUVulkanFrameInfo( g_pSDLGPUDevice,
+                                    s.pCommandBuffer,
+                                    s.pNativeXRBackBuffers[Eye],
+                                    &SDLInfo ) )
+    {
+        return FALSE;
+    }
+    s.NativeXRSourceImages[Eye] = SDLInfo.source_image;
+    static u32 XRSelectionLogCount = 0;
+    if( XRSelectionLogCount < 8 )
+    {
+        x_DebugMsg( "SDLEngine XR select eye=%u target=%p source=%p size=%ux%u\n",
+                    Eye, s.pSwapchainTexture,
+                    SDLInfo.source_image,
+                    s.BackBufferWidth, s.BackBufferHeight );
+        XRSelectionLogCount++;
+    }
+    return TRUE;
+}
 
 //==============================================================================
 //  HELPERS
@@ -102,12 +238,20 @@ void sdleng_ResetDeviceState( void )
     s.ActivePresentMode          = SDL_GPU_PRESENTMODE_VSYNC;
     s.BackBufferWidth            = 0;
     s.BackBufferHeight           = 0;
+    s.NativeXRWidth              = 0;
+    s.NativeXRHeight             = 0;
     s.FramePacingWaitMs          = 0.0f;
     s.RenderSubmitMs             = 0.0f;
     s.bInitialized               = FALSE;
     s.bWindowClaimed             = FALSE;
     s.bWindowInitializedByDevice = FALSE;
     s.bSwapchainAcquireLogged    = FALSE;
+    s.pNativeXRBackBuffers[0]    = NULL;
+    s.pNativeXRBackBuffers[1]    = NULL;
+    s.NativeXRSourceImages[0]    = NULL;
+    s.NativeXRSourceImages[1]    = NULL;
+    s.bNativeXRBackBuffer        = FALSE;
+    s.NativeXREye                = 0;
 }
 
 //==============================================================================
@@ -367,6 +511,7 @@ xbool sdleng_SubmitCurrentCommandBuffer( void )
 
 xbool sdleng_CreateDeviceForWindow( sdleng_native_window_handle hWindow, s32 Width, s32 Height )
 {
+    x_DebugMsg( "SDLEngine: preparing window for GPU\n" );
     if( s.bInitialized )
     {
         if( !hWindow || (sdleng_WindowGetHandle() == hWindow) )
@@ -384,6 +529,7 @@ xbool sdleng_CreateDeviceForWindow( sdleng_native_window_handle hWindow, s32 Wid
         sdleng_DestroyDevice();
         return FALSE;
     }
+    x_DebugMsg( "SDLEngine: creating SDL GPU device\n" );
 
 #if defined(CONFIG_DEBUG) || defined(X_DEBUG)
     const bool DebugMode = true;
@@ -391,16 +537,47 @@ xbool sdleng_CreateDeviceForWindow( sdleng_native_window_handle hWindow, s32 Wid
     const bool DebugMode = false;
 #endif
 
-    g_pSDLGPUDevice = SDL_CreateGPUDevice( SDLENG_GPU_SHADER_FORMATS,
-                                           DebugMode,
-                                           SDLENG_GPU_DRIVER_NAME );
+    if( s_bExternalVulkanDevice )
+    {
+        SDL_PropertiesID Properties = SDL_CreateProperties();
+        SDL_GPUVulkanOptions Options;
+        x_memset( &Options, 0, sizeof( Options ) );
+        Options.external_instance       = s_ExternalVulkanDevice.Instance;
+        Options.external_physical_device = s_ExternalVulkanDevice.PhysicalDevice;
+        Options.external_device         = s_ExternalVulkanDevice.Device;
+        Options.external_queue          = s_ExternalVulkanDevice.Queue;
+        Options.external_queue_family_index = s_ExternalVulkanDevice.QueueFamilyIndex;
+
+        SDL_SetStringProperty( Properties,
+                               SDL_PROP_GPU_DEVICE_CREATE_NAME_STRING,
+                               SDLENG_GPU_DRIVER_NAME );
+        SDL_SetBooleanProperty( Properties,
+                                SDL_PROP_GPU_DEVICE_CREATE_DEBUGMODE_BOOLEAN,
+                                DebugMode );
+        SDL_SetBooleanProperty( Properties,
+                                SDL_PROP_GPU_DEVICE_CREATE_SHADERS_SPIRV_BOOLEAN,
+                                TRUE );
+        SDL_SetPointerProperty( Properties,
+                                SDL_PROP_GPU_DEVICE_CREATE_VULKAN_OPTIONS_POINTER,
+                                &Options );
+        g_pSDLGPUDevice = SDL_CreateGPUDeviceWithProperties( Properties );
+        SDL_DestroyProperties( Properties );
+    }
+    else
+    {
+        g_pSDLGPUDevice = SDL_CreateGPUDevice( SDLENG_GPU_SHADER_FORMATS,
+                                               DebugMode,
+                                               SDLENG_GPU_DRIVER_NAME );
+    }
     if( !g_pSDLGPUDevice )
     {
         sdleng_LogError( "SDLEngine", "SDL_CreateGPUDevice" );
         sdleng_DestroyDevice();
         return FALSE;
     }
+    x_DebugMsg( "SDLEngine: SDL GPU device created\n" );
 
+    x_DebugMsg( "SDLEngine: setting frames in flight\n" );
     if( !SDL_SetGPUAllowedFramesInFlight( g_pSDLGPUDevice, 1 ) )
     {
         sdleng_LogError( "SDLEngine", "SDL_SetGPUAllowedFramesInFlight(1)" );
@@ -408,25 +585,78 @@ xbool sdleng_CreateDeviceForWindow( sdleng_native_window_handle hWindow, s32 Wid
         return FALSE;
     }
 
+    x_DebugMsg( "SDLEngine: initializing format policy\n" );
     if( !sdleng_InitializeFormatPolicy() )
     {
         sdleng_DestroyDevice();
         return FALSE;
     }
 
-    if( !SDL_ClaimWindowForGPUDevice( g_pSDLGPUDevice, g_pSDLWindow ) )
+    if( s_bExternalVulkanDevice )
     {
-        sdleng_LogError( "SDLEngine", "SDL_ClaimWindowForGPUDevice" );
-        sdleng_DestroyDevice();
-        return FALSE;
+        /* VR has no SDL presentation path. Avoid creating or claiming an
+         * Android window swapchain on the OpenXR-owned Vulkan instance. */
+        s.SwapchainFormat = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        s.BackBufferWidth = s_ExternalVulkanDevice.RenderWidth
+                          ? s_ExternalVulkanDevice.RenderWidth : 1024;
+        s.BackBufferHeight = s_ExternalVulkanDevice.RenderHeight
+                           ? s_ExternalVulkanDevice.RenderHeight : 1024;
     }
-    s.bWindowClaimed = TRUE;
+    else
+    {
+        x_DebugMsg( "SDLEngine: claiming window for GPU\n" );
+        if( !SDL_ClaimWindowForGPUDevice( g_pSDLGPUDevice, g_pSDLWindow ) )
+        {
+            sdleng_LogError( "SDLEngine", "SDL_ClaimWindowForGPUDevice" );
+            sdleng_DestroyDevice();
+            return FALSE;
+        }
+        s.bWindowClaimed = TRUE;
 
-    if( !sdleng_ConfigureSwapchain() )
-    {
-        sdleng_DestroyDevice();
-        return FALSE;
+        x_DebugMsg( "SDLEngine: configuring swapchain\n" );
+        if( !sdleng_ConfigureSwapchain() )
+        {
+            sdleng_DestroyDevice();
+            return FALSE;
+        }
     }
+
+    if( s_bExternalVulkanDevice )
+    {
+        const u32 NativeWidth = s_ExternalVulkanDevice.RenderWidth
+                              ? s_ExternalVulkanDevice.RenderWidth : 1024;
+        const u32 NativeHeight = s_ExternalVulkanDevice.RenderHeight
+                               ? s_ExternalVulkanDevice.RenderHeight : 1024;
+        SDL_GPUTextureCreateInfo CreateInfo;
+        x_memset( &CreateInfo, 0, sizeof( CreateInfo ) );
+        CreateInfo.type                 = SDL_GPU_TEXTURETYPE_2D;
+        CreateInfo.format               = s.SwapchainFormat;
+        CreateInfo.usage                = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+        CreateInfo.width                = NativeWidth;
+        CreateInfo.height               = NativeHeight;
+        CreateInfo.layer_count_or_depth = 1;
+        CreateInfo.num_levels           = 1;
+        CreateInfo.sample_count         = SDL_GPU_SAMPLECOUNT_1;
+        for( u32 Eye = 0; Eye < 2; ++Eye )
+        {
+            s.pNativeXRBackBuffers[Eye] = SDL_CreateGPUTexture( g_pSDLGPUDevice,
+                                                                &CreateInfo );
+            if( !s.pNativeXRBackBuffers[Eye] )
+            {
+                sdleng_LogError( "SDLEngine", "SDL_CreateGPUTexture(native XR eye backbuffer)" );
+                sdleng_DestroyDevice();
+                return FALSE;
+            }
+        }
+        s.bNativeXRBackBuffer = TRUE;
+        s.NativeXRWidth       = NativeWidth;
+        s.NativeXRHeight      = NativeHeight;
+        s.BackBufferWidth     = NativeWidth;
+        s.BackBufferHeight    = NativeHeight;
+        x_DebugMsg( "SDLEngine: native OpenXR backbuffer %ux%u\n",
+                    NativeWidth, NativeHeight );
+    }
+    x_DebugMsg( "SDLEngine: swapchain configured\n" );
 
     s.bInitialized = TRUE;
 
@@ -451,6 +681,23 @@ void sdleng_DestroyDevice( void )
     }
     sdleng_CancelFrame();
     sdleng_WaitForIdle();
+
+    if( g_pSDLGPUDevice )
+    {
+        for( u32 Eye = 0; Eye < 2; ++Eye )
+        {
+            if( s.pNativeXRBackBuffers[Eye] )
+            {
+                SDL_ReleaseGPUTexture( g_pSDLGPUDevice,
+                                       s.pNativeXRBackBuffers[Eye] );
+                s.pNativeXRBackBuffers[Eye] = NULL;
+            }
+        }
+        s.bNativeXRBackBuffer = FALSE;
+        s.NativeXREye = 0;
+        s.NativeXRWidth = 0;
+        s.NativeXRHeight = 0;
+    }
 
     if( s.bWindowClaimed && g_pSDLGPUDevice && g_pSDLWindow )
     {
@@ -516,7 +763,8 @@ xbool sdleng_AcquireCommandBuffer( void )
 
 xbool sdleng_AcquireSwapchainTexture( void )
 {
-    if( !s.bInitialized || !g_pSDLGPUDevice || !g_pSDLWindow )
+    if( !s.bInitialized || !g_pSDLGPUDevice ||
+        ( !g_pSDLWindow && !s.bNativeXRBackBuffer ) )
         return FALSE;
 
     if( s.pRenderPass )
@@ -525,14 +773,31 @@ xbool sdleng_AcquireSwapchainTexture( void )
     if( s.bSwapchainAcquired )
         return TRUE;
 
-    sdleng_UpdateBackBufferSizeFromWindow( s.BackBufferWidth  ? s.BackBufferWidth  : SDLENG_DEFAULT_BACKBUFFER_WIDTH,
-                                           s.BackBufferHeight ? s.BackBufferHeight : SDLENG_DEFAULT_BACKBUFFER_HEIGHT );
-
     if( !s.pCommandBuffer )
     {
         x_DebugMsg( "SDLEngine: swapchain acquire requires an active command buffer\n" );
         return FALSE;
     }
+
+    if( s.bNativeXRBackBuffer )
+    {
+        s.NativeXREye       = 0;
+        s.pSwapchainTexture = s.pNativeXRBackBuffers[s.NativeXREye];
+        /* SDL still owns an Android window in this mode, but that window's
+         * client extent is not the extent of the native XR render target.
+         * Keep the engine viewport and UI resolution tied to the texture we
+         * actually render and copy into the OpenXR swapchain. */
+        s.BackBufferWidth  = s.NativeXRWidth;
+        s.BackBufferHeight = s.NativeXRHeight;
+        s.AcquiredWidth    = s.NativeXRWidth;
+        s.AcquiredHeight   = s.NativeXRHeight;
+        s.FramePacingWaitMs = 0.0f;
+        s.bSwapchainAcquired = TRUE;
+        return TRUE;
+    }
+
+    sdleng_UpdateBackBufferSizeFromWindow( s.BackBufferWidth  ? s.BackBufferWidth  : SDLENG_DEFAULT_BACKBUFFER_WIDTH,
+                                           s.BackBufferHeight ? s.BackBufferHeight : SDLENG_DEFAULT_BACKBUFFER_HEIGHT );
 
     const xtick AcquireStart = x_GetTime();
     xbool bAcquired;
@@ -632,6 +897,20 @@ xbool sdleng_BeginRenderPass( const SDL_GPUColorTargetInfo*        pColorTargets
         {
             s.bBackBufferRendered = TRUE;
             break;
+        }
+    }
+
+    if( s.bNativeXRBackBuffer )
+    {
+        static u32 XRPassLogCount = 0;
+        if( XRPassLogCount < 24 )
+        {
+            x_DebugMsg( "SDLEngine XR pass eye=%u color0=%p active=%p backbuffer=%d\n",
+                        s.NativeXREye,
+                        ColorTargetCount ? pColorTargets[0].texture : NULL,
+                        s.pSwapchainTexture,
+                        s.bBackBufferRendered );
+            XRPassLogCount++;
         }
     }
 

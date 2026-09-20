@@ -194,6 +194,12 @@ private:
     xbool               m_HasOverflowed;
 };
 
+// Optional producer hook used by platform-native input layers.  The SDL and
+// desktop input backends remain unchanged; a client such as OpenXR can append
+// events before the frame snapshot is built.
+typedef void input_capture_callback( input_event_buffer& Events );
+void input_SetCaptureCallback( input_capture_callback* pCallback );
+
 //------------------------------------------------------------------------------
 
 struct input_gadget_sample

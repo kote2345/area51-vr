@@ -1,0 +1,122 @@
+//==============================================================================
+//
+//  XRRuntime_Desktop.cpp
+//
+//==============================================================================
+
+#include "XRRuntime.hpp"
+
+#define XR_USE_GRAPHICS_API_VULKAN 1
+#include <vulkan/vulkan.h>
+#include <openxr/openxr.h>
+#include <openxr/openxr_platform.h>
+
+#include <cstdio>
+
+namespace a51::xr
+{
+
+static xbool CheckResult( XrResult Result, const char* pOperation,
+                          char* pError, s32 ErrorSize )
+{
+    if( XR_SUCCEEDED( Result ) )
+        return TRUE;
+
+    if( pError && (ErrorSize > 0) )
+    {
+        std::snprintf( pError, static_cast<size_t>(ErrorSize),
+                       "OpenXR %s failed with result %d", pOperation,
+                       static_cast<int>(Result) );
+    }
+    return FALSE;
+}
+
+xbool PlatformInitializeLoader( void )
+{
+    return TRUE;
+}
+
+void PlatformShutdownLoader( void )
+{
+}
+
+xbool PlatformCreateInstance( const runtime_create_info& Info,
+                               void**                    ppInstance,
+                               char*                     pError,
+                               s32                       ErrorSize )
+{
+    if( !ppInstance )
+        return FALSE;
+
+    const char* Extensions[] = {
+        XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME,
+    };
+
+    XrInstanceCreateInfo CreateInfo{ XR_TYPE_INSTANCE_CREATE_INFO };
+    CreateInfo.enabledExtensionCount = 1;
+    CreateInfo.enabledExtensionNames = Extensions;
+    CreateInfo.applicationInfo.applicationVersion = Info.ApplicationVersion;
+    CreateInfo.applicationInfo.engineVersion       = Info.EngineVersion;
+    CreateInfo.applicationInfo.apiVersion          = XR_MAKE_VERSION( 1, 0, 0 );
+
+    std::snprintf( CreateInfo.applicationInfo.applicationName,
+                   XR_MAX_APPLICATION_NAME_SIZE, "%s",
+                   Info.ApplicationName ? Info.ApplicationName : "Area 51" );
+    std::snprintf( CreateInfo.applicationInfo.engineName,
+                   XR_MAX_ENGINE_NAME_SIZE, "%s",
+                   Info.EngineName ? Info.EngineName : "Entropy" );
+
+    XrInstance Instance = XR_NULL_HANDLE;
+    if( !CheckResult( xrCreateInstance( &CreateInfo, &Instance ),
+                      "xrCreateInstance", pError, ErrorSize ) )
+    {
+        return FALSE;
+    }
+
+    *ppInstance = reinterpret_cast<void*>( Instance );
+    return TRUE;
+}
+
+void PlatformDestroyInstance( void* pInstance )
+{
+    if( pInstance )
+        xrDestroyInstance( reinterpret_cast<XrInstance>( pInstance ) );
+}
+
+xbool PlatformGetSystemInfo( void*       pInstance,
+                              system_info& Info,
+                              char*        pError,
+                              s32          ErrorSize )
+{
+    if( !pInstance )
+        return FALSE;
+
+    XrInstance Instance = reinterpret_cast<XrInstance>( pInstance );
+    XrSystemGetInfo GetInfo{ XR_TYPE_SYSTEM_GET_INFO };
+    GetInfo.formFactor = XR_FORM_FACTOR_HEAD_MOUNTED_DISPLAY;
+
+    XrSystemId SystemId = XR_NULL_SYSTEM_ID;
+    if( !CheckResult( xrGetSystem( Instance, &GetInfo, &SystemId ),
+                      "xrGetSystem", pError, ErrorSize ) )
+    {
+        return FALSE;
+    }
+
+    XrSystemProperties Properties{ XR_TYPE_SYSTEM_PROPERTIES };
+    if( !CheckResult( xrGetSystemProperties( Instance, SystemId, &Properties ),
+                      "xrGetSystemProperties", pError, ErrorSize ) )
+    {
+        return FALSE;
+    }
+
+    Info.SystemId           = static_cast<u64>( SystemId );
+    Info.VendorId           = Properties.vendorId;
+    Info.MaxSwapchainWidth  = Properties.graphicsProperties.maxSwapchainImageWidth;
+    Info.MaxSwapchainHeight = Properties.graphicsProperties.maxSwapchainImageHeight;
+    Info.MaxLayerCount      = Properties.graphicsProperties.maxLayerCount;
+    std::snprintf( Info.SystemName, sizeof(Info.SystemName), "%s",
+                   Properties.systemName );
+    return TRUE;
+}
+
+} // namespace a51::xr

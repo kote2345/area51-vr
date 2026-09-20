@@ -52,6 +52,11 @@ view::view( void )
     m_ViewportY1 = 429;             //   479 - 50 = 249
     m_XFOV       = R_60;   
     m_PixelScale = DEFAULT_PIXEL_SCALE;         
+    m_bAsymmetricFOV = FALSE;
+    m_FOVLeft   = -R_30;
+    m_FOVRight  =  R_30;
+    m_FOVUp     =  R_30;
+    m_FOVDown   = -R_30;
     m_ZNear      =    0.1f;
     m_ZFar       = 1000.0f;
 
@@ -79,6 +84,11 @@ view::view( const view& View )
     m_ViewportY1  = View.m_ViewportY1;
     m_XFOV        = View.m_XFOV;
     m_PixelScale  = View.m_PixelScale;         
+    m_bAsymmetricFOV = View.m_bAsymmetricFOV;
+    m_FOVLeft     = View.m_FOVLeft;
+    m_FOVRight    = View.m_FOVRight;
+    m_FOVUp       = View.m_FOVUp;
+    m_FOVDown     = View.m_FOVDown;
     m_ZNear       = View.m_ZNear;
     m_ZFar        = View.m_ZFar;
 
@@ -118,6 +128,7 @@ void view::SetViewport( s32 X0, s32 Y0, s32 X1, s32 Y1 )
 void view::SetXFOV( radian XFOV )
 {
     m_XFOV = XFOV;
+    m_bAsymmetricFOV = FALSE;
 
     m_Dirty |= DIRTY_MATRICES;
     m_Dirty |= DIRTY_YFOV;
@@ -131,6 +142,7 @@ void view::SetXFOV( radian XFOV )
 
 void view::SetYFOV( radian YFOV )
 {
+    m_bAsymmetricFOV = FALSE;
     // We need a distance where the viewport pixel units are the same as our
     // world units.  Since we know the size of the viewport vertically (in 
     // pixels) and we were given the vertical angle, we can find this distance.  
@@ -155,6 +167,24 @@ void view::SetYFOV( radian YFOV )
     m_Dirty |=  DIRTY_EDGES;
     m_Dirty |=  DIRTY_MATRICES;
     m_Dirty |=  DIRTY_PROJECTION;
+}
+
+//==============================================================================
+
+void view::SetAsymmetricFOV( radian Left, radian Right,
+                             radian Up, radian Down )
+{
+    m_FOVLeft  = Left;
+    m_FOVRight = Right;
+    m_FOVUp    = Up;
+    m_FOVDown  = Down;
+    m_bAsymmetricFOV = TRUE;
+
+    m_Dirty |= DIRTY_MATRICES;
+    m_Dirty |= DIRTY_PLANES;
+    m_Dirty |= DIRTY_EDGES;
+    m_Dirty |= DIRTY_PROJECTION;
+    m_Dirty |= DIRTY_SCREENDIST;
 }
 
 //==============================================================================
@@ -1224,8 +1254,34 @@ void view::UpdateV2C( void ) const
         f32 W = (f32)(1.0f / x_tan( m_XFOV*0.5f ));
         f32 H = (f32)(1.0f / x_tan( m_YFOV*0.5f ));
         f32 Q = m_ZFar/( m_ZFar - m_ZNear);
-        m_V2C(0,0) = -W;
-        m_V2C(1,1) =  H;
+        if( m_bAsymmetricFOV )
+        {
+            const f32 Left   = -x_tan( m_FOVLeft  );
+            const f32 Right  = -x_tan( m_FOVRight );
+            const f32 Top    =  x_tan( m_FOVUp    );
+            const f32 Bottom =  x_tan( m_FOVDown  );
+            const f32 Width  = Left - Right;
+            const f32 Height = Top - Bottom;
+
+            if( (x_abs( Width ) > 0.0001f) &&
+                (x_abs( Height ) > 0.0001f) )
+            {
+                m_V2C(0,0) = -2.0f / Width;
+                m_V2C(1,1) =  2.0f / Height;
+                m_V2C(2,0) = (Left + Right) / Width;
+                m_V2C(2,1) = -(Top + Bottom) / Height;
+            }
+            else
+            {
+                m_V2C(0,0) = -W;
+                m_V2C(1,1) =  H;
+            }
+        }
+        else
+        {
+            m_V2C(0,0) = -W;
+            m_V2C(1,1) =  H;
+        }
         m_V2C(2,2) =  Q;
         m_V2C(3,2) = -Q*m_ZNear;
         m_V2C(2,3) =  1;

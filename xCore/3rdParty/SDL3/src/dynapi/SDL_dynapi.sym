@@ -289,6 +289,8 @@ SDL3_0.0.0 {
     SDL_GetGDKTaskQueue;
     SDL_GetGPUDeviceDriver;
     SDL_GetGPUDriver;
+    SDL_GetGPUVulkanDeviceInfo;
+    SDL_GetGPUVulkanFrameInfo;
     SDL_GetGPUShaderFormats;
     SDL_GetGPUSwapchainTextureFormat;
     SDL_GetGamepadAppleSFSymbolsNameForAxis;

@@ -16,6 +16,8 @@
 #include "Device_Host/io_device_host.hpp"
 #include "x_log.hpp"
 
+#include <stdio.h>
+
 //==============================================================================
 //  DEFINES
 //==============================================================================
@@ -40,6 +42,61 @@ static tell_fn*     old_Tell            = NULL;
 static flush_fn*    old_Flush           = NULL;
 static eof_fn*      old_EOF             = NULL;
 static length_fn*   old_Length          = NULL;
+
+#if defined( TARGET_ANDROID )
+// Some Android launch paths do not install the legacy x_stdio hooks before
+// the IO manager starts.  Keep a local stdio implementation for unpacked
+// files so the fallback never calls a null hook.
+static X_FILE* io_android_stdio_open( const char* pFileName, const char* pMode )
+{
+    return (X_FILE*)fopen( pFileName, pMode );
+}
+
+static void io_android_stdio_close( X_FILE* pFile )
+{
+    fclose( (FILE*)pFile );
+}
+
+static s32 io_android_stdio_read( X_FILE* pFile, byte* pBuffer, s32 Bytes )
+{
+    return (s32)fread( pBuffer, 1, Bytes, (FILE*)pFile );
+}
+
+static s32 io_android_stdio_write( X_FILE* pFile, const byte* pBuffer, s32 Bytes )
+{
+    return (s32)fwrite( pBuffer, 1, Bytes, (FILE*)pFile );
+}
+
+static s32 io_android_stdio_seek( X_FILE* pFile, s32 Offset, s32 Origin )
+{
+    return fseek( (FILE*)pFile, Offset, Origin );
+}
+
+static s32 io_android_stdio_tell( X_FILE* pFile )
+{
+    return (s32)ftell( (FILE*)pFile );
+}
+
+static s32 io_android_stdio_flush( X_FILE* pFile )
+{
+    return fflush( (FILE*)pFile );
+}
+
+static xbool io_android_stdio_eof( X_FILE* pFile )
+{
+    return feof( (FILE*)pFile ) ? TRUE : FALSE;
+}
+
+static s32 io_android_stdio_length( X_FILE* pFile )
+{
+    FILE* pStream = (FILE*)pFile;
+    const long Position = ftell( pStream );
+    fseek( pStream, 0, SEEK_END );
+    const long Length = ftell( pStream );
+    fseek( pStream, Position, SEEK_SET );
+    return (s32)Length;
+}
+#endif
 
 #ifdef IO_FS_LOGGING_ENABLED
 static xstring*     4              = NULL;     // Pointer to log
@@ -66,6 +123,98 @@ static char io_path_separator( void )
     return '\\';
 #endif
 }
+
+#if defined( TARGET_ANDROID )
+// The Quest build also supports the unpacked game-data layout.  The legacy
+// IO manager normally resolves files only from mounted DFS containers, while
+// the Android data package is installed as ordinary directories.  Keep this
+// fallback Android-only so the desktop DFS path remains unchanged.
+static void io_clean_path( char* pClean, const char* pFilename );
+
+static X_FILE* io_android_open_unpacked( const char* pPathName, const char* pMode )
+{
+    static s32 s_LogCount = 0;
+
+    if( !pPathName || !pPathName[0] )
+        return NULL;
+
+    char HostPrefix[IO_DEVICE_MAX_PREFIX_LENGTH];
+    char CleanName[X_MAX_PATH];
+    char UpperName[X_MAX_PATH];
+    char Candidate[IO_DEVICE_MAX_PREFIX_LENGTH + X_MAX_PATH + 32];
+
+    if( (pPathName[0] == '/') || (pPathName[0] == '\\') )
+    {
+        X_FILE* pFile = old_Open
+                      ? old_Open( pPathName, pMode )
+                      : (X_FILE*)fopen( pPathName, pMode );
+        if( pFile )
+            return pFile;
+    }
+
+    g_IoMgr.GetDevicePathPrefix( HostPrefix, IO_DEVICE_HOST );
+    io_clean_path( CleanName, pPathName );
+    if( !CleanName[0] )
+        return NULL;
+
+    if( s_LogCount < 40 )
+    {
+        x_DebugMsg( "Android unpacked IO: '%s' prefix '%s' oldOpen=%p\\n",
+                    CleanName, HostPrefix, (void*)old_Open );
+        s_LogCount++;
+    }
+
+    x_strcpy( UpperName, CleanName );
+    x_strtoupper( UpperName );
+
+    const char* pDirectories[] =
+    {
+        "",
+        "SHADERS/",
+        "MOVIES/",
+        "COMMON/",
+        "STRINGS/",
+        "AUDIO/AMBIENT/",
+        "AUDIO/HOT/",
+        "AUDIO/VOICE/",
+        "AUDIO/MUSIC/",
+        "PRELOAD/",
+        "BOOT/"
+    };
+
+    for( s32 i = 0; i < (s32)(sizeof(pDirectories) / sizeof(pDirectories[0])); i++ )
+    {
+        const char* pDirectory = pDirectories[i];
+
+        x_sprintf( Candidate, "%s%s%s", HostPrefix, pDirectory, CleanName );
+        X_FILE* pFile = old_Open
+                      ? old_Open( Candidate, pMode )
+                      : (X_FILE*)fopen( Candidate, pMode );
+        if( pFile )
+        {
+            x_DebugMsg( "Android unpacked IO: opened '%s'\\n", Candidate );
+            return pFile;
+        }
+
+        // Windows-era resource names are commonly uppercase on disk, while
+        // the game requests them using mixed case.
+        if( x_stricmp( UpperName, CleanName ) != 0 )
+        {
+            x_sprintf( Candidate, "%s%s%s", HostPrefix, pDirectory, UpperName );
+            pFile = old_Open
+                  ? old_Open( Candidate, pMode )
+                  : (X_FILE*)fopen( Candidate, pMode );
+            if( pFile )
+            {
+                x_DebugMsg( "Android unpacked IO: opened '%s'\\n", Candidate );
+                return pFile;
+            }
+        }
+    }
+
+    return NULL;
+}
+#endif
 
 // Virtual DFS paths are case-insensitive for compatibility with the PC
 // implementation. The host path of an emulated Linux DFS keeps its real case.
@@ -412,6 +561,21 @@ xbool io_fs::Init( void )
                        old_Flush,
                        old_EOF,
                        old_Length );
+
+#if defined( TARGET_ANDROID )
+    // The SDL Android stream hook is suitable for app/package files, but it
+    // does not resolve absolute paths in shared storage on all Quest builds.
+    // Use libc stdio for the unpacked shared-storage fallback.
+    old_Open   = io_android_stdio_open;
+    old_Close  = io_android_stdio_close;
+    old_Read   = io_android_stdio_read;
+    old_Write  = io_android_stdio_write;
+    old_Seek   = io_android_stdio_seek;
+    old_Tell   = io_android_stdio_tell;
+    old_Flush  = io_android_stdio_flush;
+    old_EOF    = io_android_stdio_eof;
+    old_Length = io_android_stdio_length;
+#endif
 
 #if ( (defined(TARGET_DESKTOP) || defined(TARGET_MOBILE)) && !defined(X_EDITOR) )
     // Set new IOHooks
@@ -1371,6 +1535,40 @@ io_open_file* io_fs::Open( const char* pPathName, const char* pMode )
             }
         }
     }
+
+#if defined( TARGET_ANDROID )
+    if( !pOpenFile && bRead && !bWrite )
+    {
+        X_FILE* pPassThrough = io_android_open_unpacked( pPathName, pMode );
+        if( pPassThrough )
+        {
+            pOpenFile = AcquireFile();
+            if( pOpenFile )
+            {
+                pOpenFile->bRead             = TRUE;
+                pOpenFile->bWrite            = FALSE;
+                pOpenFile->bAppend           = FALSE;
+                pOpenFile->PassThrough       = pPassThrough;
+                pOpenFile->pDeviceFile       = NULL;
+                pOpenFile->pRAM              = NULL;
+                pOpenFile->Offset            = 0;
+                pOpenFile->Length            = old_Length ? old_Length( pPassThrough ) : 0;
+                pOpenFile->Position          = 0;
+                pOpenFile->Mode              = OpenFlags;
+                pOpenFile->pNext             = NULL;
+                pOpenFile->bEnableChecksum   = FALSE;
+
+#ifdef IO_RETAIN_FILENAME
+                x_strncpy( pOpenFile->Filename, pPathName, 256 );
+#endif
+            }
+            else
+            {
+                old_Close( pPassThrough );
+            }
+        }
+    }
+#endif
 
     // Properly deal with passthru
 #if !ENABLE_PASSTHROUGH

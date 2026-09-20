@@ -1,7 +1,13 @@
 package com.area51.game;
 
+import android.Manifest;
+import android.content.ActivityNotFoundException;
+import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
+import android.provider.Settings;
+import android.net.Uri;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -15,6 +21,9 @@ import org.libsdl.app.SDLActivity;
  * Android, so keep the system bars out of the game surface here.
  */
 public final class A51Activity extends SDLActivity {
+    private static final int STORAGE_PERMISSION_REQUEST = 5101;
+    private boolean storagePermissionRequested;
+
     private static final int LEGACY_FULLSCREEN_FLAGS =
             View.SYSTEM_UI_FLAG_FULLSCREEN |
             View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
@@ -50,12 +59,50 @@ public final class A51Activity extends SDLActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        requestGameStorageAccess();
+
         getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(visibility -> {
             if (hasWindowFocus()) {
                 getWindow().getDecorView().post(this::hideSystemBars);
             }
         });
         hideSystemBars();
+    }
+
+    /**
+     * Game data is deliberately kept in /sdcard/Area51 so it can be updated
+     * independently from the APK.  On Quest OS, READ/WRITE_EXTERNAL_STORAGE
+     * are not sufficient for an app targeting Android 11 or newer; request
+     * the all-files access permission used by the standalone port.
+     */
+    private void requestGameStorageAccess() {
+        if (storagePermissionRequested) {
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Environment.isExternalStorageManager()) {
+                return;
+            }
+
+            storagePermissionRequested = true;
+            try {
+                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                intent.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(intent);
+            } catch (ActivityNotFoundException ignored) {
+                startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+            }
+            return;
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            storagePermissionRequested = true;
+            requestPermissions(new String[] {
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+            }, STORAGE_PERMISSION_REQUEST);
+        }
     }
 
     @Override

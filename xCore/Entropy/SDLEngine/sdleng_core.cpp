@@ -663,21 +663,26 @@ void eng_Init( void )
 
     sdleng_WindowSetResizeCallback( sdleng_core_OnWindowResized, NULL );
 
+    x_DebugMsg( "SDLEngine: initializing window\n" );
     if( !sdleng_WindowInit( WindowDesc ) )
     {
         x_DebugMsg( "SDLEngine: window initialization failed\n" );        
         return;
     }
+    x_DebugMsg( "SDLEngine: window initialized\n" );
 
+    x_DebugMsg( "SDLEngine: initializing GPU device\n" );
     if( !sdleng_CreateDeviceForWindow( sdleng_WindowGetHandle(), InitXRes, InitYRes ) )
     {
         x_DebugMsg( "SDLEngine: GPU device initialization failed\n" );
         sdleng_WindowKill();
         return;
     }
+    x_DebugMsg( "SDLEngine: GPU device ready\n" );
 
     sdleng_WindowShow();
 
+    x_DebugMsg( "SDLEngine: initializing render targets\n" );
     rtarget_Init();
     s.bRenderTargetsInitialized = TRUE;
 
@@ -914,6 +919,11 @@ xbool eng_EndFrame( void )
     const xbool bSubmitted = sdleng_EndFrame();
     const xtick SubmitTime = x_GetTime();
     s.RenderSubmitMs = sdleng_GetRenderSubmitMs();
+
+    if( bSubmitted )
+    {
+        sdleng_core_RunFrameStages( &eng_frame_stage::OnAfterPresent );
+    }
 
     s.bFrameActive      = FALSE;
     s.bRenderTaskActive = FALSE;

@@ -1106,6 +1106,13 @@ typedef struct VulkanFeatures
 
     bool usesCustomVulkanOptions;
 
+    bool usesExternalVulkan;
+    VkInstance externalInstance;
+    VkPhysicalDevice externalPhysicalDevice;
+    VkDevice externalDevice;
+    VkQueue externalQueue;
+    Uint32 externalQueueFamilyIndex;
+
     Uint32 additionalDeviceExtensionCount;
     const char **additionalDeviceExtensionNames;
     Uint32 additionalInstanceExtensionCount;
@@ -1128,6 +1135,7 @@ struct VulkanRenderer
 
     bool debugMode;
     bool preferLowPower;
+    bool usesExternalVulkan;
     bool requireHardwareAcceleration;
     SDL_PropertiesID props;
     Uint32 allowedFramesInFlight;
@@ -1234,6 +1242,72 @@ struct VulkanRenderer
     PFN_##func func;
 #include "SDL_gpu_vulkan_vkfuncs.h"
 };
+
+bool SDL_GetGPUVulkanDeviceInfo(
+    SDL_GPUDevice *device,
+    SDL_GPUVulkanDeviceInfo *info)
+{
+    VulkanRenderer *renderer;
+
+    if (!device || !info || !device->backend ||
+        SDL_strcmp(device->backend, "vulkan") != 0) {
+        return false;
+    }
+
+    renderer = (VulkanRenderer *)device->driverData;
+    if (!renderer) {
+        return false;
+    }
+
+    info->instance = (void *)renderer->instance;
+    info->physical_device = (void *)renderer->physicalDevice;
+    info->device = (void *)renderer->logicalDevice;
+    info->queue = (void *)renderer->unifiedQueue;
+    info->queue_family_index = renderer->queueFamilyIndex;
+    return true;
+}
+
+bool SDL_GetGPUVulkanFrameInfo(
+    SDL_GPUDevice *device,
+    SDL_GPUCommandBuffer *command_buffer,
+    SDL_GPUTexture *texture,
+    SDL_GPUVulkanFrameInfo *info)
+{
+    VulkanCommandBuffer *command;
+    VulkanTextureContainer *container;
+
+    if (!device || !command_buffer || !texture || !info ||
+        !device->backend || SDL_strcmp(device->backend, "vulkan") != 0) {
+        return false;
+    }
+
+    command = (VulkanCommandBuffer *)command_buffer;
+    container = (VulkanTextureContainer *)texture;
+    if (!command->renderer || command->common.device != device ||
+        !container->activeTexture) {
+        return false;
+    }
+
+    {
+        static int a51FrameInfoLogCount = 0;
+        if (a51FrameInfoLogCount < 32) {
+            SDL_Log("A51 SDL frame info texture=%p container=%p active=%p image=%p cycle=%d ref=%d",
+                    (void *)texture,
+                    (void *)container,
+                    (void *)container->activeTexture,
+                    (void *)container->activeTexture->image,
+                    container->canBeCycled ? 1 : 0,
+                    SDL_GetAtomicInt(&container->activeTexture->referenceCount));
+            a51FrameInfoLogCount += 1;
+        }
+    }
+
+    info->command_buffer = (void *)command->commandBuffer;
+    info->source_image = (void *)container->activeTexture->image;
+    info->width = container->header.info.width;
+    info->height = container->header.info.height;
+    return true;
+}
 
 // Forward declarations
 
@@ -5075,8 +5149,10 @@ static void VULKAN_DestroyDevice(
     SDL_DestroyMutex(renderer->descriptorSetLayoutFetchLock);
     SDL_DestroyMutex(renderer->windowLock);
 
-    renderer->vkDestroyDevice(renderer->logicalDevice, NULL);
-    renderer->vkDestroyInstance(renderer->instance, NULL);
+    if (!renderer->usesExternalVulkan) {
+        renderer->vkDestroyDevice(renderer->logicalDevice, NULL);
+        renderer->vkDestroyInstance(renderer->instance, NULL);
+    }
 
     SDL_DestroyProperties(renderer->props);
 
@@ -11905,6 +11981,18 @@ static void VULKAN_INTERNAL_AddOptInVulkanOptions(SDL_PropertiesID props, Vulkan
             features->usesCustomVulkanOptions = true;
             features->desiredApiVersion = options->vulkan_api_version;
 
+            if (options->external_instance &&
+                options->external_physical_device &&
+                options->external_device &&
+                options->external_queue) {
+                features->usesExternalVulkan = true;
+                features->externalInstance = (VkInstance)options->external_instance;
+                features->externalPhysicalDevice = (VkPhysicalDevice)options->external_physical_device;
+                features->externalDevice = (VkDevice)options->external_device;
+                features->externalQueue = (VkQueue)options->external_queue;
+                features->externalQueueFamilyIndex = options->external_queue_family_index;
+            }
+
             SDL_zero(features->desiredVulkan11DeviceFeatures);
             SDL_zero(features->desiredVulkan12DeviceFeatures);
             SDL_zero(features->desiredVulkan13DeviceFeatures);
@@ -12367,6 +12455,45 @@ static Uint8 VULKAN_INTERNAL_IsDeviceSuitable(
     return 1;
 }
 
+static Uint8 VULKAN_INTERNAL_AdoptExternalDevice(
+    VulkanRenderer *renderer,
+    VulkanFeatures *features)
+{
+    renderer->instance = features->externalInstance;
+    renderer->physicalDevice = features->externalPhysicalDevice;
+    renderer->logicalDevice = features->externalDevice;
+    renderer->unifiedQueue = features->externalQueue;
+    renderer->queueFamilyIndex = features->externalQueueFamilyIndex;
+    renderer->usesExternalVulkan = true;
+
+    renderer->physicalDeviceProperties.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    renderer->physicalDeviceProperties.pNext = NULL;
+    renderer->vkGetPhysicalDeviceProperties(
+        renderer->physicalDevice,
+        &renderer->physicalDeviceProperties.properties);
+    renderer->vkGetPhysicalDeviceMemoryProperties(
+        renderer->physicalDevice,
+        &renderer->memoryProperties);
+
+    /* The XR-owned instance/device already have their extension and feature
+     * set fixed by the runtime. Only record the extensions that SDL can use;
+     * never try to recreate the device here. */
+    if (!VULKAN_INTERNAL_CheckDeviceExtensions(
+            renderer, features, renderer->physicalDevice,
+            &renderer->supports)) {
+        SDL_LogError(SDL_LOG_CATEGORY_GPU,
+                     "External Vulkan device is missing SDL's required extensions");
+        return 0;
+    }
+
+    renderer->supportsDebugUtils = false;
+    renderer->supportsColorspace = false;
+    renderer->supportsPhysicalDeviceProperties2 = false;
+    renderer->supportsPortabilityEnumeration = false;
+    return 1;
+}
+
 static Uint8 VULKAN_INTERNAL_DeterminePhysicalDevice(VulkanRenderer *renderer, VulkanFeatures *features)
 {
     VkResult vulkanResult;
@@ -12654,6 +12781,17 @@ static Uint8 VULKAN_INTERNAL_CreateLogicalDevice(
     return 1;
 }
 
+static void VULKAN_INTERNAL_LoadExternalDeviceEntryPoints(
+    VulkanRenderer *renderer)
+{
+#define VULKAN_DEVICE_FUNCTION(func)                    \
+    renderer->func = (PFN_##func)                       \
+                         renderer->vkGetDeviceProcAddr( \
+                             renderer->logicalDevice,   \
+                             #func);
+#include "SDL_gpu_vulkan_vkfuncs.h"
+}
+
 static void VULKAN_INTERNAL_LoadEntryPoints(void)
 {
     // Required for MoltenVK support
@@ -12715,6 +12853,17 @@ static bool VULKAN_INTERNAL_PrepareVulkan(
 
     renderer->requireHardwareAcceleration = SDL_GetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_VULKAN_REQUIRE_HARDWARE_ACCELERATION_BOOLEAN, false);
 
+    if (features->usesExternalVulkan) {
+        /* OpenXR owns this instance and device. Load SDL's instance entry
+         * points against it and adopt the handles without creating or
+         * destroying another Vulkan context. */
+        renderer->instance = features->externalInstance;
+#define VULKAN_INSTANCE_FUNCTION(func) \
+        renderer->func = (PFN_##func)vkGetInstanceProcAddr(renderer->instance, #func);
+#include "SDL_gpu_vulkan_vkfuncs.h"
+        return VULKAN_INTERNAL_AdoptExternalDevice(renderer, features) != 0;
+    }
+
     if (!VULKAN_INTERNAL_CreateInstance(renderer, features)) {
         SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "Vulkan: Could not create Vulkan instance");
         return false;
@@ -12758,7 +12907,7 @@ static bool VULKAN_PrepareDriver(SDL_VideoDevice *_this, SDL_PropertiesID props)
         renderer->preferLowPower = SDL_GetBooleanProperty(props, SDL_PROP_GPU_DEVICE_CREATE_PREFERLOWPOWER_BOOLEAN, false);
 
         result = VULKAN_INTERNAL_PrepareVulkan(renderer, &features, props);
-        if (result) {
+        if (result && !features.usesExternalVulkan) {
             renderer->vkDestroyInstance(renderer->instance, NULL);
         }
 
@@ -12904,11 +13053,16 @@ static SDL_GPUDevice *VULKAN_CreateDevice(bool debugMode, bool preferLowPower, S
         }
     }
 
-    if (!VULKAN_INTERNAL_CreateLogicalDevice(renderer, &features)) {
+    if (!features.usesExternalVulkan &&
+        !VULKAN_INTERNAL_CreateLogicalDevice(renderer, &features)) {
         SET_STRING_ERROR("Failed to create logical device!");
         SDL_free(renderer);
         SDL_Vulkan_UnloadLibrary();
         return NULL;
+    }
+
+    if (features.usesExternalVulkan) {
+        VULKAN_INTERNAL_LoadExternalDeviceEntryPoints(renderer);
     }
 
     // FIXME: just move this into this function

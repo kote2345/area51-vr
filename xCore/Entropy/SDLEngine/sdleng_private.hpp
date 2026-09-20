@@ -25,6 +25,7 @@
 #include "e_VRAM.hpp"
 
 #include "SDL3/SDL.h"
+#include "sdleng_vulkan.hpp"
 
 //==============================================================================
 //  CONFIGURATION

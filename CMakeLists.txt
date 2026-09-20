@@ -71,6 +71,11 @@ option( A51_BUILD_SELECTED_APPS "Build the selected application targets" ON )
 option( A51_ENABLE_QT "Enable Qt integration for XBMPViewer when Qt6 is available" ON )
 option( A51_EXPORT_COMPILE_COMMANDS "Generate compile_commands.json for tooling" ON )
 option( A51_BUILD_DXC "Build the bundled DXC host compiler from source" ON )
+option( A51_ENABLE_OPENXR "Enable the common OpenXR runtime layer" OFF )
+set( A51_OPENXR_HEADERS_DIR "" CACHE PATH
+     "Directory containing the OpenXR headers (openxr/openxr.h)" )
+set( A51_OPENXR_LOADER_LIBRARY "" CACHE FILEPATH
+     "OpenXR loader library for desktop or Android" )
 if( WIN32 )
     set( _a51_default_windows_targets ON )
 else()
@@ -87,6 +92,11 @@ add_library( a51_build_options INTERFACE )
 add_library( a51::build_options ALIAS a51_build_options )
 
 target_compile_features( a51_build_options INTERFACE cxx_std_17 )
+if( A51_ENABLE_OPENXR )
+    target_compile_definitions( a51_build_options INTERFACE
+        A51_ENABLE_OPENXR=1
+    )
+endif()
 target_compile_definitions( a51_build_options INTERFACE
     "$<$<PLATFORM_ID:Windows>:NOMINMAX>"
     "$<$<PLATFORM_ID:Windows>:_CRT_SECURE_NO_WARNINGS>"
@@ -140,6 +150,58 @@ endif()
 
 if( A51_ENABLE_QT )
     find_package( Qt6 COMPONENTS Core Gui Widgets QUIET )
+endif()
+
+if( A51_ENABLE_OPENXR )
+    if( NOT CMAKE_SYSTEM_NAME MATCHES "^(Windows|Linux|Android)$" )
+        message( FATAL_ERROR
+            "A51_ENABLE_OPENXR requires a Windows, Linux, or Android target; "
+            "CMAKE_SYSTEM_NAME is '${CMAKE_SYSTEM_NAME}'." )
+    endif()
+
+    if( CMAKE_SYSTEM_NAME STREQUAL "Android" )
+        if( CMAKE_ANDROID_ARCH_ABI AND
+            NOT CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a" )
+            message( FATAL_ERROR
+                "A51_ENABLE_OPENXR on Android currently requires arm64-v8a; "
+                "CMAKE_ANDROID_ARCH_ABI is '${CMAKE_ANDROID_ARCH_ABI}'." )
+        endif()
+
+        # The Khronos Android AAR exposes both OpenXR::headers and
+        # OpenXR::openxr_loader through Gradle Prefab. Do not require a
+        # filesystem path here: the prefab package is materialized by the
+        # Android Gradle Plugin before the native CMake configure step.
+        message( STATUS "OpenXR Android dependency will be provided by Gradle Prefab." )
+    else()
+        if( NOT A51_OPENXR_HEADERS_DIR )
+            find_path( A51_OPENXR_HEADERS_DIR
+                NAMES openxr/openxr.h
+                PATH_SUFFIXES include )
+        endif()
+
+        if( NOT A51_OPENXR_HEADERS_DIR OR
+            NOT EXISTS "${A51_OPENXR_HEADERS_DIR}/openxr/openxr.h" )
+            message( FATAL_ERROR
+                "A51_ENABLE_OPENXR is ON, but OpenXR headers were not found. "
+                "Pass -DA51_OPENXR_HEADERS_DIR=/path/to/include." )
+        endif()
+
+        if( NOT A51_OPENXR_LOADER_LIBRARY )
+            find_library( A51_OPENXR_LOADER_LIBRARY
+                NAMES openxr_loader OpenXR_loader openxr_loader_mt )
+        endif()
+
+        if( NOT A51_OPENXR_LOADER_LIBRARY )
+            message( FATAL_ERROR
+                "A51_ENABLE_OPENXR is ON, but the OpenXR loader was not found. "
+                "Pass -DA51_OPENXR_LOADER_LIBRARY=/path/to/openxr_loader." )
+        endif()
+
+        set( A51_OPENXR_HEADERS_DIR "${A51_OPENXR_HEADERS_DIR}"
+             CACHE PATH "Directory containing the OpenXR headers" FORCE )
+        set( A51_OPENXR_LOADER_LIBRARY "${A51_OPENXR_LOADER_LIBRARY}"
+             CACHE FILEPATH "OpenXR loader library" FORCE )
+    endif()
 endif()
 
 #==========================================================================

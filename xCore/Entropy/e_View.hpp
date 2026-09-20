@@ -56,6 +56,8 @@ public:
 void            SetViewport     ( s32 X0, s32 Y0, s32 X1, s32 Y1 );
 void            SetXFOV         ( radian XFOV );
 void            SetYFOV         ( radian YFOV );
+void            SetAsymmetricFOV( radian Left, radian Right,
+                                  radian Up, radian Down );
 void            SetPixelScale   ( f32 PixelScale = DEFAULT_PIXEL_SCALE );
 void            SetZLimits      ( f32 ZNear, f32 ZFar );
                 
@@ -259,6 +261,14 @@ protected:
                                         
         radian      m_XFOV;             // Field of view in X
         f32         m_PixelScale;       // Says how the hardware scales pixels (not all pixels are square!)
+
+        // Optional off-axis projection used by native stereo displays. The
+        // regular symmetric FOV path remains the default for all platforms.
+        xbool       m_bAsymmetricFOV;
+        radian      m_FOVLeft;
+        radian      m_FOVRight;
+        radian      m_FOVUp;
+        radian      m_FOVDown;
                                         
         f32         m_ZNear;            // Near plane in Z
         f32         m_ZFar;             // Far  plane in Z

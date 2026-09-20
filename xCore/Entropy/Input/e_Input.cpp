@@ -136,6 +136,14 @@ enum input_activity_priority
 //==============================================================================
 
 input_system g_Input;
+static input_capture_callback* s_pCaptureCallback = NULL;
+
+//==============================================================================
+
+void input_SetCaptureCallback( input_capture_callback* pCallback )
+{
+    s_pCaptureCallback = pCallback;
+}
 
 //==============================================================================
 //  HELPER FUNCTIONS
@@ -773,6 +781,8 @@ xbool input_system::CaptureFrameInput( void )
     }
 
     xbool const ExitRequested = m_pBackend->CaptureFrameInput( m_CapturedEvents );
+    if( s_pCaptureCallback )
+        s_pCaptureCallback( m_CapturedEvents );
     m_CapturedEvents.Sort();
     BuildFrameSnapshot();
 

@@ -79,6 +79,7 @@ a51_add_project( Entropy STATIC
         "${CMAKE_CURRENT_LIST_DIR}/Audio/codecs/mp3/audio_mp3_stream_decoder_state.hpp"
         "${CMAKE_CURRENT_LIST_DIR}/e_RenderDraw.hpp"
         "${CMAKE_CURRENT_LIST_DIR}/SDLEngine/sdleng_private.hpp"
+        "${CMAKE_CURRENT_LIST_DIR}/SDLEngine/sdleng_vulkan.hpp"
         "${CMAKE_CURRENT_LIST_DIR}/Entropy.hpp"
         "${CMAKE_CURRENT_LIST_DIR}/e_Audio.hpp"
         "${CMAKE_CURRENT_LIST_DIR}/e_Composite.hpp"

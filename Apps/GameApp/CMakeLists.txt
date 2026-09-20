@@ -41,6 +41,10 @@ set( A51_GAME_APP_DEPENDENCIES
     x_files
 )
 
+if( A51_ENABLE_OPENXR )
+    list( APPEND A51_GAME_APP_DEPENDENCIES A51OpenXR )
+endif()
+
 if( CMAKE_SYSTEM_NAME MATCHES "^(Linux|Android)$" AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang" )
     # Group circular static-library dependencies for GNU ld.
     list( INSERT A51_GAME_APP_DEPENDENCIES 0 "-Wl,--start-group" )

@@ -2410,7 +2410,44 @@ typedef struct SDL_GPUVulkanOptions
 	const char **device_extension_names; /**< Pointer to a list of additional device extensions to require. */
 	Uint32 instance_extension_count; /**< Number of additional instance extensions to require. */
 	const char **instance_extension_names; /**< Pointer to a list of additional instance extensions to require. */
+
+	/* Optional engine-owned Vulkan context. When all handles are non-null,
+	 * the Vulkan backend adopts the context instead of creating a second
+	 * VkInstance/VkDevice. This is used by the Android OpenXR renderer. */
+	void *external_instance;
+	void *external_physical_device;
+	void *external_device;
+	void *external_queue;
+	Uint32 external_queue_family_index;
 } SDL_GPUVulkanOptions;
+
+/** Native Vulkan handles exposed for engine-level OpenXR interop. */
+typedef struct SDL_GPUVulkanDeviceInfo
+{
+    void *instance;
+    void *physical_device;
+    void *device;
+    void *queue;
+    Uint32 queue_family_index;
+} SDL_GPUVulkanDeviceInfo;
+
+typedef struct SDL_GPUVulkanFrameInfo
+{
+    void *command_buffer;
+    void *source_image;
+    Uint32 width;
+    Uint32 height;
+} SDL_GPUVulkanFrameInfo;
+
+extern SDL_DECLSPEC bool SDLCALL SDL_GetGPUVulkanDeviceInfo(
+    SDL_GPUDevice *device,
+    SDL_GPUVulkanDeviceInfo *info);
+
+extern SDL_DECLSPEC bool SDLCALL SDL_GetGPUVulkanFrameInfo(
+    SDL_GPUDevice *device,
+    SDL_GPUCommandBuffer *command_buffer,
+    SDL_GPUTexture *texture,
+    SDL_GPUVulkanFrameInfo *info);
 
 /**
  * Destroys a GPU context previously returned by SDL_CreateGPUDevice.

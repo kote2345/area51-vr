@@ -10,6 +10,10 @@ add_subdirectory( Render )
 add_subdirectory( ScriptMgr )
 add_subdirectory( StringMgr )
 
+if( A51_ENABLE_OPENXR )
+    add_subdirectory( VR )
+endif()
+
 set( _a51_support_targets
     AudioMgr
     ConversationMgr
@@ -23,6 +27,10 @@ set( _a51_support_targets
     Script_mgr
     StringMgr
 )
+
+if( A51_ENABLE_OPENXR )
+    list( APPEND _a51_support_targets A51OpenXR )
+endif()
 
 add_custom_target( a51_support )
 add_dependencies( a51_support ${_a51_support_targets} )

@@ -128,6 +128,12 @@
 #include "GameAppPlatform.hpp"
 #include "Configuration/GameConfig.hpp"
 
+#if defined( A51_ENABLE_OPENXR )
+#include "VR/XRRuntime.hpp"
+#include "VR/XRSession.hpp"
+#include "SDLEngine/sdleng_vulkan.hpp"
+#endif
+
 #if CONFIG_IS_DEMO
 xtimer g_DemoIdleTimer;
 #endif
@@ -182,6 +188,20 @@ const char* DifficultyText[]        = { "Easy", "Medium", "Hard" };
 xbool       g_right_stick_swap_xy   = FALSE;
 xbool       g_bBloodEnabled         = TRUE;
 xbool       g_bRagdollsEnabled      = TRUE;
+
+#if defined( A51_ENABLE_OPENXR )
+a51::xr::Runtime g_XRRuntime;
+a51::xr::VulkanSession g_XRSession;
+xbool              g_XRGameFrameBridge = FALSE;
+xbool              g_XRPreinitialized   = FALSE;
+xbool              g_XRFramePrepared    = FALSE;
+xbool              g_XRFrameFailed      = FALSE;
+xbool              g_XRFrameStageRegistered = FALSE;
+xbool              g_XRFrameStereoRendered = FALSE;
+s32                g_XRActiveEye       = -1;
+u32                g_XRRenderWidth     = 0;
+u32                g_XRRenderHeight    = 0;
+#endif
 
 //==============================================================================
 //  GLOBAL VARIABLES - CONTROLLER
@@ -565,6 +585,224 @@ static xbool ClearBackBuffer( void )
     return TRUE;
 }
 
+#if defined( A51_ENABLE_OPENXR )
+static void XRStage_BeginFrame( void );
+static void XRStage_BeforePresent( void );
+static void XRStage_AfterPresent( void );
+static void XRInput_Capture( input_event_buffer& Events );
+static const eng_frame_stage s_XRFrameStage =
+{
+    XRStage_BeginFrame,
+    XRStage_BeforePresent,
+    3000,
+    XRStage_AfterPresent
+};
+
+static void XRInput_Capture( input_event_buffer& Events )
+{
+    if( g_XRGameFrameBridge )
+        g_XRSession.CaptureInput( Events );
+}
+
+static xbool InitializeOpenXRBeforeEngine( void )
+{
+    a51::xr::runtime_create_info XRInfo;
+    if( !g_XRRuntime.Initialize( XRInfo ) )
+    {
+        x_DebugMsg( "OpenXR initialization failed: %s\n",
+                    g_XRRuntime.GetLastError() );
+        return FALSE;
+    }
+
+    a51::xr::system_info const& System = g_XRRuntime.GetSystemInfo();
+    x_DebugMsg( "OpenXR system: %s (%ux%u)\n",
+                System.SystemName,
+                System.MaxSwapchainWidth,
+                System.MaxSwapchainHeight );
+
+    /* Android VR owns the Vulkan context from the beginning. SDL is only
+     * used as the engine's command/render API on top of these handles. */
+    if( !g_XRSession.Initialize( g_XRRuntime ) )
+    {
+        x_DebugMsg( "OpenXR Vulkan session initialization failed: %s\n",
+                    g_XRSession.GetLastError() );
+        g_XRRuntime.Shutdown();
+        return FALSE;
+    }
+
+    a51::xr::vulkan_device_info XRDevice;
+    if( !g_XRSession.GetVulkanDeviceInfo( XRDevice ) )
+    {
+        x_DebugMsg( "OpenXR Vulkan device handles are unavailable\n" );
+        g_XRSession.Shutdown();
+        g_XRRuntime.Shutdown();
+        return FALSE;
+    }
+
+    sdleng_vulkan_device_info SDLDevice = {};
+    SDLDevice.Instance         = XRDevice.Instance;
+    SDLDevice.PhysicalDevice   = XRDevice.PhysicalDevice;
+    SDLDevice.Device           = XRDevice.Device;
+    SDLDevice.Queue            = XRDevice.Queue;
+    SDLDevice.QueueFamilyIndex = XRDevice.QueueFamilyIndex;
+    g_XRSession.GetRecommendedRenderSize( SDLDevice.RenderWidth,
+                                          SDLDevice.RenderHeight );
+    if( !sdleng_SetVulkanExternalDevice( SDLDevice ) )
+    {
+        x_DebugMsg( "SDL could not adopt the OpenXR Vulkan device\n" );
+        g_XRSession.Shutdown();
+        g_XRRuntime.Shutdown();
+        return FALSE;
+    }
+
+    g_XRGameFrameBridge = TRUE;
+    g_XRPreinitialized = TRUE;
+    return TRUE;
+}
+
+static void XRStage_BeginFrame( void )
+{
+    g_XRFrameStereoRendered = FALSE;
+    if( !g_XRGameFrameBridge )
+        return;
+
+    const a51::xr::session_state State = g_XRSession.GetState();
+    if( (State != a51::xr::session_state::Ready) &&
+        (State != a51::xr::session_state::Running) )
+    {
+        return;
+    }
+
+    if( !g_XRSession.BeginFrame() )
+    {
+        x_DebugMsg( "OpenXR: failed to begin render frame: %s\n",
+                    g_XRSession.GetLastError() );
+    }
+}
+
+static void XRStage_BeforePresent( void )
+{
+    g_XRFramePrepared = FALSE;
+    g_XRFrameFailed   = FALSE;
+
+    const a51::xr::session_state State = g_XRSession.GetState();
+    const xbool bXRStateReady =
+        (State == a51::xr::session_state::Ready) ||
+        (State == a51::xr::session_state::Running);
+
+    if( !g_XRGameFrameBridge || !bXRStateReady )
+        return;
+
+    sdleng_vulkan_frame_info SDLFrame = {};
+    sdleng_vulkan_frame_info SDLRightFrame = {};
+    const xbool bStereoFrame = g_XRFrameStereoRendered;
+    if( bStereoFrame )
+    {
+        if( !sdleng_GetVulkanFrameInfoForEye( 0, SDLFrame ) ||
+            !sdleng_GetVulkanFrameInfoForEye( 1, SDLRightFrame ) )
+        {
+            x_DebugMsg( "OpenXR: stereo Vulkan frame handles unavailable\n" );
+            g_XRFrameFailed = TRUE;
+            return;
+        }
+    }
+    else if( !sdleng_GetVulkanFrameInfo( SDLFrame ) )
+    {
+        x_DebugMsg( "OpenXR: SDL Vulkan frame handles unavailable\n" );
+        g_XRFrameFailed = TRUE;
+        return;
+    }
+
+    a51::xr::vulkan_frame_info XRFrame;
+    XRFrame.CommandBuffer = SDLFrame.CommandBuffer;
+    XRFrame.SourceImage   = SDLFrame.SourceImage;
+    XRFrame.Width         = SDLFrame.Width;
+    XRFrame.Height        = SDLFrame.Height;
+
+    a51::xr::vulkan_frame_info XRRightFrame;
+    XRRightFrame.CommandBuffer = SDLRightFrame.CommandBuffer;
+    XRRightFrame.SourceImage   = SDLRightFrame.SourceImage;
+    XRRightFrame.Width         = SDLRightFrame.Width;
+    XRRightFrame.Height        = SDLRightFrame.Height;
+
+    /* Front-end screens and startup movies are authored as a flat 2D
+     * surface. Present them as a world-space quad instead of stretching the
+     * UI over the whole projection frustum. Gameplay keeps true stereo. */
+    const xbool bUseQuadLayer = (g_StateMgr.GetState() != SM_PLAYING_GAME);
+    const xbool bPrepared = bUseQuadLayer
+                          ? g_XRSession.PrepareQuadFrame( XRFrame )
+                          : bStereoFrame
+                          ? g_XRSession.PrepareStereoFrame( XRFrame,
+                                                            XRRightFrame )
+                          : g_XRSession.PrepareFrame( XRFrame );
+    if( !bPrepared )
+    {
+        x_DebugMsg( "OpenXR game frame preparation failed: %s\n",
+                    g_XRSession.GetLastError() );
+        g_XRFrameFailed = TRUE;
+        return;
+    }
+
+    g_XRFramePrepared = TRUE;
+}
+
+static void XRStage_AfterPresent( void )
+{
+    if( !g_XRFramePrepared )
+        return;
+
+    if( !g_XRSession.FinishFrame() )
+    {
+        x_DebugMsg( "OpenXR frame submission failed: %s\n",
+                    g_XRSession.GetLastError() );
+        g_XRSession.Shutdown();
+        g_XRGameFrameBridge = FALSE;
+    }
+
+    /* This callback is also used by the standalone movie-player loop,
+     * which calls eng_EndFrame() instead of EndFrameWithXR(). */
+    g_XRFramePrepared      = FALSE;
+    g_XRFrameStereoRendered = FALSE;
+}
+
+static xbool EndFrameWithXR( void )
+{
+    /* XRStage_BeforePresent runs from eng_EndFrame after the game, UI and
+     * post-processing stages have recorded their work.  The XR copy is
+     * therefore ordered after the final menu/loading-screen pixels. */
+    g_XRFramePrepared = FALSE;
+    g_XRFrameFailed   = FALSE;
+
+    if( !eng_EndFrame() )
+    {
+        if( g_XRFramePrepared )
+            g_XRSession.CancelFrame();
+        return FALSE;
+    }
+
+    if( g_XRFramePrepared )
+    {
+        if( !g_XRSession.FinishFrame() )
+        {
+            x_DebugMsg( "OpenXR frame submission failed: %s\n",
+                        g_XRSession.GetLastError() );
+            g_XRSession.Shutdown();
+            g_XRGameFrameBridge = FALSE;
+        }
+        g_XRFramePrepared = FALSE;
+        g_XRFrameStereoRendered = FALSE;
+        return TRUE;
+    }
+    g_XRFrameStereoRendered = FALSE;
+    return TRUE;
+}
+#else
+static xbool EndFrameWithXR( void )
+{
+    return eng_EndFrame();
+}
+#endif
+
 //==============================================================================
 
 static xbool FinishClearOnlyFrame( void )
@@ -574,7 +812,7 @@ static xbool FinishClearOnlyFrame( void )
         return FALSE;
     }
 
-    return eng_EndFrame();
+    return EndFrameWithXR();
 }
 
 //==============================================================================
@@ -697,7 +935,7 @@ xbool UpdateFrontEnd( FramePacer& Pacer, FrameTiming& FrontEndClock )
         return FALSE;
     }
 
-    return eng_EndFrame();
+    return EndFrameWithXR();
 }
 
 //==============================================================================
@@ -728,7 +966,7 @@ xbool UpdateLevelLoadingFrame( FrameTiming& FrontEndClock )
         return FALSE;
     }
 
-    return eng_EndFrame();
+    return EndFrameWithXR();
 }
 
 //==============================================================================
@@ -856,6 +1094,10 @@ static void LogThreadDebugStats( f32 DeltaTime )
 #endif // !defined(X_RETAIL) && X_WORKERS_DEBUG && X_THREADS_DEBUG && X_WORKERS_DEBUG_LOG
 
 //==============================================================================
+
+#if defined( A51_ENABLE_OPENXR )
+static void RenderGameStereoXR( void );
+#endif
 
 void RenderGame( void )
 {
@@ -1020,11 +1262,102 @@ void RenderGame( void )
     #endif
         {
             g_View = pPlayers[i]->GetRenderView();
+
+#if defined( A51_ENABLE_OPENXR )
+            /* Compose the eye camera using the same model as the working
+             * Simpsons OpenXR renderer: local relative XR pose multiplied by
+             * the original game camera.  The compositor receives the
+             * absolute XrView pose separately, so this pose is applied only
+             * to the game render and is never applied twice. */
+            if( g_XRActiveEye >= 0 )
+            {
+                a51::xr::eye_view XREye;
+                if( g_XRSession.GetEyeView( (u32)g_XRActiveEye, XREye ) )
+                {
+                    /* eng_GetRes() is the Android surface size (4128x2208
+                     * on Quest 3), not the native per-eye OpenXR target
+                     * (1680x1760).  The projection and viewport must use the
+                     * same extent as the SDL/Vulkan texture that is copied
+                     * into the XR swapchain. */
+                    const s32 XRViewportWidth =
+                        g_XRRenderWidth ? (s32)g_XRRenderWidth : XRes;
+                    const s32 XRViewportHeight =
+                        g_XRRenderHeight ? (s32)g_XRRenderHeight : YRes;
+                    g_View.SetViewport( 0, 0,
+                                        XRViewportWidth, XRViewportHeight );
+
+                    /* OpenXR uses +X right, +Y up and -Z forward.  The
+                     * legacy renderer uses camera-left/+Y/+Z, so conjugating
+                     * the pose by the 180-degree Y basis conversion maps
+                     * head rotation without changing the game world. */
+                    quaternion HeadRotation( -XREye.Orientation[0],
+                                               XREye.Orientation[1],
+                                              -XREye.Orientation[2],
+                                               XREye.Orientation[3] );
+                    HeadRotation.Normalize();
+
+                    matrix4 EyeLocal;
+                    EyeLocal.Identity();
+                    EyeLocal.SetRotation( HeadRotation );
+                    /* Area 51 world coordinates use centimetres while
+                     * OpenXR poses are metres.  The conversion is applied
+                     * only to the relative eye translation; room-scale
+                     * translation remains relative to the captured origin. */
+                    const vector3 EyeOffset = vector3(
+                        XREye.Position[0] * 100.0f,
+                        XREye.Position[1] * 100.0f,
+                       -XREye.Position[2] * 100.0f );
+                    EyeLocal.SetTranslation( EyeLocal.RotateVector( EyeOffset ) );
+
+                    /* Camera-to-world composition is base * local. Reversing
+                     * this order rotates the whole map around world origin
+                     * whenever the headset turns. */
+                    const matrix4 EyeCamera = g_View.GetV2W() * EyeLocal;
+                    g_View.SetV2W( EyeCamera );
+
+                    /* Keep culling bounds wide enough for the full eye and
+                     * then use the exact asymmetric projection for this eye.
+                     * SetAsymmetricFOV must be last because SetXFOV/SetYFOV
+                     * intentionally switch the legacy symmetric mode off. */
+                    const f32 XFOV = 2.0f * MAX( x_abs( XREye.FovLeft ),
+                                                 x_abs( XREye.FovRight ) );
+                    const f32 YFOV = 2.0f * MAX( x_abs( XREye.FovUp ),
+                                                 x_abs( XREye.FovDown ) );
+                    if( YFOV > 0.01f )
+                        g_View.SetYFOV( YFOV );
+                    if( XFOV > 0.01f )
+                        g_View.SetXFOV( XFOV );
+                    g_View.SetAsymmetricFOV( XREye.FovLeft,
+                                             XREye.FovRight,
+                                             XREye.FovUp,
+                                             XREye.FovDown );
+                }
+
+            }
+#endif
         }
 
         zone_mgr::zone_id const PlayerViewZone =
             pPlayers[i]->GetPlayerViewZone();
         SetupViewAndFog( PlayerViewZone );
+
+#if defined( A51_ENABLE_OPENXR )
+        if( g_XRActiveEye >= 0 )
+        {
+            static xbool LoggedProjection[2] = { FALSE, FALSE };
+            if( !LoggedProjection[g_XRActiveEye] )
+            {
+                const matrix4& Projection = eng_GetView()->GetV2C();
+                x_DebugMsg( "OpenXR game eye %d: viewport %d x %d P00/P20/P11/P21 %.6f %.6f %.6f %.6f\n",
+                            g_XRActiveEye,
+                            g_XRRenderWidth ? (s32)g_XRRenderWidth : XRes,
+                            g_XRRenderHeight ? (s32)g_XRRenderHeight : YRes,
+                            Projection( 0, 0 ), Projection( 2, 0 ),
+                            Projection( 1, 1 ), Projection( 2, 1 ) );
+                LoggedProjection[g_XRActiveEye] = TRUE;
+            }
+        }
+#endif
 
         // Perform any platform specific render initialization
         InitRenderPlatform();
@@ -1046,6 +1379,57 @@ void RenderGame( void )
     g_DebugMenu.Render();
     #endif // defined( ENABLE_DEBUG_MENU )
 }
+
+#if defined( A51_ENABLE_OPENXR )
+static void RenderGameStereoXR( void )
+{
+    if( !g_XRGameFrameBridge || !sdleng_HasVulkanExternalDevice() )
+    {
+        RenderGame();
+        return;
+    }
+
+    if( !sdleng_SetVulkanRenderEye( 0 ) )
+    {
+        RenderGame();
+        return;
+    }
+
+    sdleng_vulkan_frame_info LeftFrame = {};
+    if( sdleng_GetVulkanFrameInfoForEye( 0, LeftFrame ) )
+    {
+        g_XRRenderWidth  = LeftFrame.Width;
+        g_XRRenderHeight = LeftFrame.Height;
+    }
+
+    g_XRActiveEye = 0;
+    RenderGame();
+    /* RenderGame may leave the final SDL render task open.  Close the
+     * backend pass before switching the native color target to eye 1. */
+    rtarget_EndPass();
+
+    if( !sdleng_SetVulkanRenderEye( 1 ) )
+    {
+        g_XRActiveEye = -1;
+        return;
+    }
+
+    sdleng_vulkan_frame_info RightFrame = {};
+    if( sdleng_GetVulkanFrameInfoForEye( 1, RightFrame ) )
+    {
+        g_XRRenderWidth  = RightFrame.Width;
+        g_XRRenderHeight = RightFrame.Height;
+    }
+
+    g_XRActiveEye = 1;
+    RenderGame();
+    rtarget_EndPass();
+    g_XRActiveEye = -1;
+    g_XRRenderWidth = 0;
+    g_XRRenderHeight = 0;
+    g_XRFrameStereoRendered = TRUE;
+}
+#endif
 
 //==============================================================================
 //  STATISTICS AND DEBUG FUNCTIONS
@@ -1299,8 +1683,75 @@ void DoStartup( void )
         g_Config.AutoServer = TRUE;
     #endif
 
+ #if defined( A51_ENABLE_OPENXR ) && defined( TARGET_ANDROID )
+    InitializeOpenXRBeforeEngine();
+ #endif
+
     eng_Init();
     GameAppSetWindowIcon();
+
+#if defined( A51_ENABLE_OPENXR ) && !defined( TARGET_ANDROID )
+    {
+        a51::xr::runtime_create_info XRInfo;
+        if( !g_XRRuntime.Initialize( XRInfo ) )
+        {
+            x_DebugMsg( "OpenXR initialization failed: %s\n",
+                        g_XRRuntime.GetLastError() );
+        }
+        else
+        {
+            a51::xr::system_info const& System = g_XRRuntime.GetSystemInfo();
+            x_DebugMsg( "OpenXR system: %s (%ux%u)\n",
+                        System.SystemName,
+                        System.MaxSwapchainWidth,
+                        System.MaxSwapchainHeight );
+
+            sdleng_vulkan_device_info SDLDevice;
+            if( sdleng_GetVulkanDeviceInfo( SDLDevice ) )
+            {
+                a51::xr::vulkan_device_info XRDevice;
+                XRDevice.Instance         = SDLDevice.Instance;
+                XRDevice.PhysicalDevice   = SDLDevice.PhysicalDevice;
+                XRDevice.Device           = SDLDevice.Device;
+                XRDevice.Queue            = SDLDevice.Queue;
+                XRDevice.QueueFamilyIndex = SDLDevice.QueueFamilyIndex;
+
+                if( g_XRSession.Initialize( g_XRRuntime, XRDevice ) )
+                {
+                    g_XRGameFrameBridge = TRUE;
+                    x_DebugMsg( "OpenXR: using SDL Vulkan device for game frames\n" );
+                }
+                else
+                {
+                    x_DebugMsg( "OpenXR SDL Vulkan session initialization failed: %s\n",
+                                g_XRSession.GetLastError() );
+                    // Preserve the previous validation path as a diagnostic
+                    // fallback. It does not intercept the game's SDL frame.
+                    if( !g_XRSession.Initialize( g_XRRuntime ) )
+                    {
+                        x_DebugMsg( "OpenXR fallback Vulkan session initialization failed: %s\n",
+                                    g_XRSession.GetLastError() );
+                    }
+                }
+            }
+            else if( !g_XRSession.Initialize( g_XRRuntime ) )
+            {
+                x_DebugMsg( "OpenXR Vulkan session initialization failed: %s\n",
+                            g_XRSession.GetLastError() );
+            }
+        }
+    }
+#endif
+
+#if defined( A51_ENABLE_OPENXR )
+    if( g_XRGameFrameBridge && !g_XRFrameStageRegistered )
+    {
+        input_SetCaptureCallback( XRInput_Capture );
+        /* Must run after the UI (1000) and post-process finalization (2000). */
+        eng_RegisterFrameStage( s_XRFrameStage );
+        g_XRFrameStageRegistered = TRUE;
+    }
+#endif
 
     //
     // Fire up some of the major system managers.
@@ -1418,6 +1869,18 @@ void DoShutdown( void )
     delete g_UiMgr;
     g_UiMgr = NULL;
     render::Kill();
+#if defined( A51_ENABLE_OPENXR )
+    input_SetCaptureCallback( NULL );
+    if( g_XRFrameStageRegistered )
+    {
+        eng_UnregisterFrameStage( s_XRFrameStage );
+        g_XRFrameStageRegistered = FALSE;
+    }
+    g_XRGameFrameBridge = FALSE;
+    g_XRFramePrepared = FALSE;
+    g_XRSession.Shutdown();
+    g_XRRuntime.Shutdown();
+#endif
     eng_Kill();
     g_LevelLoader.UnmountDefaultFilesystems();
     g_IoMgr.Kill();
@@ -1620,14 +2083,18 @@ void RunGame( void )
         // We are now reasonably caught up time-wise.  Lets show the situation.
         //
 
-        // give the level a few frames for triggers and other objects to get
-        // started before trying to render anything
-        if( GameMgr.GameInProgress() )
-        {
-            if( g_nLogicFramesAfterLoad > 10 )
+            // give the level a few frames for triggers and other objects to get
+            // started before trying to render anything
+            if( GameMgr.GameInProgress() )
             {
-                RenderGame();
-            }
+                if( g_nLogicFramesAfterLoad > 10 )
+                {
+#if defined( A51_ENABLE_OPENXR )
+                    RenderGameStereoXR();
+#else
+                    RenderGame();
+#endif
+                }
             else if( !ClearBackBuffer() )
             {
                 break;
@@ -1643,7 +2110,7 @@ void RunGame( void )
                 //AudioStats( FrameDeltaTime );
                 #endif // X_RETAIL
             }
-            if( !eng_EndFrame() )
+            if( !EndFrameWithXR() )
             {
                 break;
             }

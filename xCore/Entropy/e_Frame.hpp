@@ -26,6 +26,10 @@ struct eng_frame_stage
     eng_frame_callback  OnBeginFrame;
     eng_frame_callback  OnBeforePresent;
     s32                 Order;
+    /* Called after the backend has submitted the frame.  Keeping this
+     * callback after Order preserves source compatibility with existing
+     * three-field frame stages. */
+    eng_frame_callback  OnAfterPresent;
 };
 
 //==============================================================================

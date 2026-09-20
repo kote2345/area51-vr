@@ -7,10 +7,15 @@
 #include "GameAppPlatform.hpp"
 
 #include "SDL3/SDL_filesystem.h"
-#include "SDL3/SDL_system.h"
 
 #include <cstring>
-#include <unistd.h>
+
+namespace
+{
+    // Runtime data is intentionally kept outside the APK so the same game
+    // files can be shared by the standalone Quest build and desktop ports.
+    constexpr char s_Area51DataPath[] = "/sdcard/Area51";
+}
 
 //==============================================================================
 
@@ -42,14 +47,7 @@ xbool GameAppGetExecutableDirectory( char* pBuffer, s32 BufferSize )
 
 xbool GameAppGetDataDirectory( char* pBuffer, s32 BufferSize )
 {
-    const char* pExternalPath = SDL_GetAndroidExternalStoragePath();
-    if( pExternalPath && pExternalPath[0] )
-    {
-        if( access( pExternalPath, R_OK | X_OK ) == 0 )
-            return CopyPath( pBuffer, BufferSize, pExternalPath );
-    }
-
-    return CopyPath( pBuffer, BufferSize, "." );
+    return CopyPath( pBuffer, BufferSize, s_Area51DataPath );
 }
 
 //==============================================================================
