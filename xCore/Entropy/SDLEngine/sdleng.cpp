@@ -135,11 +135,19 @@ xbool sdleng_GetVulkanFrameInfoForEye( u32 Eye,
                                        sdleng_vulkan_frame_info& Info )
 {
     if( Eye >= 2 || !g_pSDLGPUDevice || !sdleng_GetCommandBuffer() )
+    {
+        x_DebugMsg( "A51XR SDL frame-info failed eye=%u device=%p command=%p\n",
+                    Eye, g_pSDLGPUDevice, s.pCommandBuffer );
         return FALSE;
+    }
 
     SDL_GPUTexture* pTexture = s.pNativeXRBackBuffers[Eye];
     if( !pTexture )
+    {
+        x_DebugMsg( "A51XR SDL frame-info failed eye=%u native-target=null\n",
+                    Eye );
         return FALSE;
+    }
 
     SDL_GPUVulkanFrameInfo SDLInfo;
     if( !SDL_GetGPUVulkanFrameInfo( g_pSDLGPUDevice,
@@ -147,6 +155,8 @@ xbool sdleng_GetVulkanFrameInfoForEye( u32 Eye,
                                     pTexture,
                                     &SDLInfo ) )
     {
+        x_DebugMsg( "A51XR SDL frame-info failed eye=%u texture=%p\n",
+                    Eye, pTexture );
         return FALSE;
     }
 
@@ -156,6 +166,10 @@ xbool sdleng_GetVulkanFrameInfoForEye( u32 Eye,
                        : SDLInfo.source_image;
     Info.Width         = s.NativeXRSourceImages[Eye] ? s.NativeXRWidth  : SDLInfo.width;
     Info.Height        = s.NativeXRSourceImages[Eye] ? s.NativeXRHeight : SDLInfo.height;
+    x_DebugMsg( "A51XR SDL frame-info eye=%u texture=%p queriedSrc=%p cachedSrc=%p cmd=%p outSrc=%p size=%ux%u\n",
+                Eye, pTexture, SDLInfo.source_image,
+                s.NativeXRSourceImages[Eye], Info.CommandBuffer,
+                Info.SourceImage, Info.Width, Info.Height );
     return TRUE;
 }
 
@@ -165,6 +179,10 @@ xbool sdleng_SetVulkanRenderEye( u32 Eye )
         !s.pCommandBuffer || s.pRenderPass ||
         !s.pNativeXRBackBuffers[Eye] )
     {
+        x_DebugMsg( "A51XR SDL select-eye failed eye=%u native=%d cmd=%p pass=%p target=%p\n",
+                    Eye, s.bNativeXRBackBuffer, s.pCommandBuffer,
+                    s.pRenderPass,
+                    (Eye < 2) ? s.pNativeXRBackBuffers[Eye] : NULL );
         return FALSE;
     }
 
@@ -180,18 +198,14 @@ xbool sdleng_SetVulkanRenderEye( u32 Eye )
                                     s.pNativeXRBackBuffers[Eye],
                                     &SDLInfo ) )
     {
+        x_DebugMsg( "A51XR SDL select-eye failed eye=%u target=%p frame-info\n",
+                    Eye, s.pNativeXRBackBuffers[Eye] );
         return FALSE;
     }
     s.NativeXRSourceImages[Eye] = SDLInfo.source_image;
-    static u32 XRSelectionLogCount = 0;
-    if( XRSelectionLogCount < 8 )
-    {
-        x_DebugMsg( "SDLEngine XR select eye=%u target=%p source=%p size=%ux%u\n",
-                    Eye, s.pSwapchainTexture,
-                    SDLInfo.source_image,
-                    s.BackBufferWidth, s.BackBufferHeight );
-        XRSelectionLogCount++;
-    }
+    x_DebugMsg( "A51XR SDL select-eye eye=%u target=%p source=%p cmd=%p size=%ux%u\n",
+                Eye, s.pSwapchainTexture, SDLInfo.source_image,
+                SDLInfo.command_buffer, s.BackBufferWidth, s.BackBufferHeight );
     return TRUE;
 }
 
@@ -468,6 +482,12 @@ sdleng_present_policy sdleng_GetPresentPolicy( void )
 static
 xbool sdleng_SubmitCurrentCommandBuffer( void )
 {
+    if( s.bNativeXRBackBuffer )
+    {
+        x_DebugMsg( "A51XR SDL submit begin cmd=%p acquired=%d rendered=%d pass=%p eye=%u\n",
+                    s.pCommandBuffer, s.bSwapchainAcquired,
+                    s.bBackBufferRendered, s.pRenderPass, s.NativeXREye );
+    }
     if( !s.pCommandBuffer )
         return TRUE;
 
@@ -502,6 +522,11 @@ xbool sdleng_SubmitCurrentCommandBuffer( void )
     s.RenderSubmitMs = RenderStartTime
                        ? x_TicksToMs( x_GetTime() - RenderStartTime )
                        : 0.0f;
+    if( s.bNativeXRBackBuffer )
+    {
+        x_DebugMsg( "A51XR SDL submit done cmd=%p elapsed=%.3fms\n",
+                    pCommandBuffer, s.RenderSubmitMs );
+    }
     return TRUE;
 }
 
@@ -757,6 +782,11 @@ xbool sdleng_AcquireCommandBuffer( void )
         return FALSE;
     }
 
+    if( s.bNativeXRBackBuffer )
+    {
+        x_DebugMsg( "A51XR SDL acquire-command cmd=%p native=%d\n",
+                    s.pCommandBuffer, s.bNativeXRBackBuffer );
+    }
     s.RenderStartTime = 0;
     return TRUE;
 }
@@ -793,6 +823,9 @@ xbool sdleng_AcquireSwapchainTexture( void )
         s.AcquiredHeight   = s.NativeXRHeight;
         s.FramePacingWaitMs = 0.0f;
         s.bSwapchainAcquired = TRUE;
+        x_DebugMsg( "A51XR SDL acquire-target native eye=%u target=%p size=%ux%u\n",
+                    s.NativeXREye, s.pSwapchainTexture,
+                    s.BackBufferWidth, s.BackBufferHeight );
         return TRUE;
     }
 
@@ -886,6 +919,23 @@ xbool sdleng_BeginRenderPass( const SDL_GPUColorTargetInfo*        pColorTargets
         return FALSE;
     }
 
+    if( s.bNativeXRBackBuffer && ColorTargetCount &&
+        pColorTargets[0].texture )
+    {
+        SDL_GPUVulkanFrameInfo FrameInfo;
+        const bool bHaveFrameInfo =
+            SDL_GetGPUVulkanFrameInfo( g_pSDLGPUDevice,
+                                       s.pCommandBuffer,
+                                       pColorTargets[0].texture,
+                                       &FrameInfo );
+        x_DebugMsg( "A51XR SDL begin-pass eye=%u pass=%p color=%p activeTarget=%p queried=%d source=%p cmd=%p\n",
+                    s.NativeXREye, s.pRenderPass,
+                    pColorTargets[0].texture, s.pSwapchainTexture,
+                    bHaveFrameInfo,
+                    bHaveFrameInfo ? FrameInfo.source_image : NULL,
+                    bHaveFrameInfo ? FrameInfo.command_buffer : NULL );
+    }
+
     if( s.RenderStartTime == 0 )
     {
         s.RenderStartTime = RenderStart;
@@ -902,16 +952,11 @@ xbool sdleng_BeginRenderPass( const SDL_GPUColorTargetInfo*        pColorTargets
 
     if( s.bNativeXRBackBuffer )
     {
-        static u32 XRPassLogCount = 0;
-        if( XRPassLogCount < 24 )
-        {
-            x_DebugMsg( "SDLEngine XR pass eye=%u color0=%p active=%p backbuffer=%d\n",
-                        s.NativeXREye,
-                        ColorTargetCount ? pColorTargets[0].texture : NULL,
-                        s.pSwapchainTexture,
-                        s.bBackBufferRendered );
-            XRPassLogCount++;
-        }
+        x_DebugMsg( "A51XR SDL pass-start eye=%u color0=%p active=%p backbuffer=%d\n",
+                    s.NativeXREye,
+                    ColorTargetCount ? pColorTargets[0].texture : NULL,
+                    s.pSwapchainTexture,
+                    s.bBackBufferRendered );
     }
 
     sdleng_ResetPipelineBinding();
@@ -927,6 +972,10 @@ void sdleng_EndRenderPass( void )
 {
     if( !s.pRenderPass )
         return;
+
+    if( s.bNativeXRBackBuffer )
+        x_DebugMsg( "A51XR SDL end-pass eye=%u pass=%p target=%p\n",
+                    s.NativeXREye, s.pRenderPass, s.pSwapchainTexture );
 
     static xprofile_counter RenderPassCountMetric =
         x_GetProfiler().RegisterCounter( "RenderPassCalls", "Renderer" );
@@ -952,6 +1001,12 @@ void sdleng_EndRenderPass( void )
 
 xbool sdleng_EndFrame( void )
 {
+    if( s.bNativeXRBackBuffer )
+    {
+        x_DebugMsg( "A51XR SDL end-frame cmd=%p target=%p rendered=%d\n",
+                    s.pCommandBuffer, s.pSwapchainTexture,
+                    s.bBackBufferRendered );
+    }
     return sdleng_SubmitCurrentCommandBuffer();
 }
 

@@ -96,6 +96,9 @@
 #include "../Support/TriggerEx/TriggerEx_Manager.hpp"
 #include "../Support/Tracers/TracerMgr.hpp"
 #include "../Support/Render/LightMgr.hpp"
+#if defined( A51_ENABLE_OPENXR )
+#include "../Support/Render/PC/GBufferMgr.hpp"
+#endif
 #include "Navigation/Nav_Map.hpp"
 #include "Navigation/ng_connection2.hpp"
 #include "Navigation/ng_node2.hpp"
@@ -201,6 +204,7 @@ xbool              g_XRFrameStereoRendered = FALSE;
 s32                g_XRActiveEye       = -1;
 u32                g_XRRenderWidth     = 0;
 u32                g_XRRenderHeight    = 0;
+u32                g_XRDebugFrame      = 0;
 #endif
 
 //==============================================================================
@@ -662,7 +666,11 @@ static xbool InitializeOpenXRBeforeEngine( void )
 
 static void XRStage_BeginFrame( void )
 {
+    ++g_XRDebugFrame;
     g_XRFrameStereoRendered = FALSE;
+    x_DebugMsg( "A51XR frame=%u stage=BeginFrame bridge=%d state=%d\n",
+                g_XRDebugFrame, g_XRGameFrameBridge,
+                static_cast<s32>( g_XRSession.GetState() ) );
     if( !g_XRGameFrameBridge )
         return;
 
@@ -670,10 +678,15 @@ static void XRStage_BeginFrame( void )
     if( (State != a51::xr::session_state::Ready) &&
         (State != a51::xr::session_state::Running) )
     {
+        x_DebugMsg( "A51XR frame=%u stage=BeginFrame skip state=%d\n",
+                    g_XRDebugFrame, static_cast<s32>( State ) );
         return;
     }
 
-    if( !g_XRSession.BeginFrame() )
+    const xbool bFrameBegun = g_XRSession.BeginFrame();
+    x_DebugMsg( "A51XR frame=%u stage=BeginFrame result=%d\n",
+                g_XRDebugFrame, bFrameBegun );
+    if( !bFrameBegun )
     {
         x_DebugMsg( "OpenXR: failed to begin render frame: %s\n",
                     g_XRSession.GetLastError() );
@@ -690,6 +703,10 @@ static void XRStage_BeforePresent( void )
         (State == a51::xr::session_state::Ready) ||
         (State == a51::xr::session_state::Running);
 
+    x_DebugMsg( "A51XR frame=%u stage=BeforePresent state=%d ready=%d stereo=%d\n",
+                g_XRDebugFrame, static_cast<s32>( State ), bXRStateReady,
+                g_XRFrameStereoRendered );
+
     if( !g_XRGameFrameBridge || !bXRStateReady )
         return;
 
@@ -705,6 +722,12 @@ static void XRStage_BeforePresent( void )
             g_XRFrameFailed = TRUE;
             return;
         }
+        x_DebugMsg( "A51XR frame=%u stage=BeforePresent stereo leftCmd=%p leftSrc=%p rightCmd=%p rightSrc=%p size=%ux%u/%ux%u\n",
+                    g_XRDebugFrame,
+                    SDLFrame.CommandBuffer, SDLFrame.SourceImage,
+                    SDLRightFrame.CommandBuffer, SDLRightFrame.SourceImage,
+                    SDLFrame.Width, SDLFrame.Height,
+                    SDLRightFrame.Width, SDLRightFrame.Height );
     }
     else if( !sdleng_GetVulkanFrameInfo( SDLFrame ) )
     {
@@ -729,6 +752,9 @@ static void XRStage_BeforePresent( void )
      * surface. Present them as a world-space quad instead of stretching the
      * UI over the whole projection frustum. Gameplay keeps true stereo. */
     const xbool bUseQuadLayer = (g_StateMgr.GetState() != SM_PLAYING_GAME);
+    x_DebugMsg( "A51XR frame=%u stage=BeforePresent layer=%s gameState=%d\n",
+                g_XRDebugFrame, bUseQuadLayer ? "quad" : (bStereoFrame ? "stereo" : "mono"),
+                static_cast<s32>( g_StateMgr.GetState() ) );
     const xbool bPrepared = bUseQuadLayer
                           ? g_XRSession.PrepareQuadFrame( XRFrame )
                           : bStereoFrame
@@ -744,14 +770,21 @@ static void XRStage_BeforePresent( void )
     }
 
     g_XRFramePrepared = TRUE;
+    x_DebugMsg( "A51XR frame=%u stage=BeforePresent prepared=1\n",
+                g_XRDebugFrame );
 }
 
 static void XRStage_AfterPresent( void )
 {
+    x_DebugMsg( "A51XR frame=%u stage=AfterPresent prepared=%d failed=%d\n",
+                g_XRDebugFrame, g_XRFramePrepared, g_XRFrameFailed );
     if( !g_XRFramePrepared )
         return;
 
-    if( !g_XRSession.FinishFrame() )
+    const xbool bFinished = g_XRSession.FinishFrame();
+    x_DebugMsg( "A51XR frame=%u stage=AfterPresent finish=%d\n",
+                g_XRDebugFrame, bFinished );
+    if( !bFinished )
     {
         x_DebugMsg( "OpenXR frame submission failed: %s\n",
                     g_XRSession.GetLastError() );
@@ -1344,6 +1377,17 @@ void RenderGame( void )
 #if defined( A51_ENABLE_OPENXR )
         if( g_XRActiveEye >= 0 )
         {
+            const vector3 XRGameCameraPosition = g_View.GetPosition();
+            const matrix4& XRProjection = eng_GetView()->GetV2C();
+            x_DebugMsg( "A51XR frame=%u game-camera eye=%d pos=%.5f,%.5f,%.5f viewport=%ux%u P00/P20/P11/P21=%.6f,%.6f,%.6f,%.6f\n",
+                        g_XRDebugFrame, g_XRActiveEye,
+                        XRGameCameraPosition[0],
+                        XRGameCameraPosition[1],
+                        XRGameCameraPosition[2],
+                        g_XRRenderWidth ? (s32)g_XRRenderWidth : XRes,
+                        g_XRRenderHeight ? (s32)g_XRRenderHeight : YRes,
+                        XRProjection( 0, 0 ), XRProjection( 2, 0 ),
+                        XRProjection( 1, 1 ), XRProjection( 2, 1 ) );
             static xbool LoggedProjection[2] = { FALSE, FALSE };
             if( !LoggedProjection[g_XRActiveEye] )
             {
@@ -1381,53 +1425,109 @@ void RenderGame( void )
 }
 
 #if defined( A51_ENABLE_OPENXR )
-static void RenderGameStereoXR( void )
+static xbool RenderGameStereoEyeXR( u32 Eye,
+                                    sdleng_vulkan_frame_info& Frame )
 {
-    if( !g_XRGameFrameBridge || !sdleng_HasVulkanExternalDevice() )
+    const xbool bSelected = sdleng_SetVulkanRenderEye( Eye );
+    x_DebugMsg( "A51XR frame=%u render=stereo select eye=%u result=%d\n",
+                g_XRDebugFrame, Eye, bSelected );
+    if( !bSelected )
     {
-        RenderGame();
-        return;
+        x_DebugMsg( "A51XR frame=%u render=stereo abort eye=%u selection\n",
+                    g_XRDebugFrame, Eye );
+        g_XRActiveEye = -1;
+        return FALSE;
     }
 
-    if( !sdleng_SetVulkanRenderEye( 0 ) )
+    const xbool bInfo = sdleng_GetVulkanFrameInfoForEye( Eye, Frame );
+    x_DebugMsg( "A51XR frame=%u render=stereo eye=%u frame-info result=%d\n",
+                g_XRDebugFrame, Eye, bInfo );
+    if( !bInfo )
     {
+        g_XRActiveEye = -1;
+        return FALSE;
+    }
+
+    g_XRRenderWidth  = Frame.Width;
+    g_XRRenderHeight = Frame.Height;
+    g_XRActiveEye    = static_cast<s32>( Eye );
+    x_DebugMsg( "A51XR frame=%u render=stereo eye=%u begin viewport=%ux%u src=%p\n",
+                g_XRDebugFrame, Eye, g_XRRenderWidth, g_XRRenderHeight,
+                Frame.SourceImage );
+
+    /* The normal frame pipeline calls GBufferMgr::BeginFrame once and
+     * presents the scene once from the engine's BeforePresent stage.  VR
+     * renders the game twice inside that one engine frame, so the second eye
+     * would otherwise reuse the first eye's G-buffer/depth state and the
+     * single final blit would only reach whichever eye was selected last. */
+    g_GBufferMgr.BeginFrame();
+    x_DebugMsg( "A51XR frame=%u render=stereo eye=%u gbuffer-begin\n",
+                g_XRDebugFrame, Eye );
+    RenderGame();
+    x_DebugMsg( "A51XR frame=%u render=stereo eye=%u game-done\n",
+                g_XRDebugFrame, Eye );
+
+    /* Finish this eye while its native SDL target is still selected.  The
+     * regular frame-stage present remains enabled for non-VR and performs a
+     * harmless final present of the last eye after both stereo passes. */
+    g_GBufferMgr.PresentFinalColor();
+    x_DebugMsg( "A51XR frame=%u render=stereo eye=%u gbuffer-present\n",
+                g_XRDebugFrame, Eye );
+    rtarget_EndPass();
+    x_DebugMsg( "A51XR frame=%u render=stereo eye=%u pass-ended\n",
+                g_XRDebugFrame, Eye );
+
+    sdleng_vulkan_frame_info AfterRender = {};
+    const xbool bAfterInfo = sdleng_GetVulkanFrameInfoForEye( Eye, AfterRender );
+    x_DebugMsg( "A51XR frame=%u render=stereo eye=%u after-pass result=%d src=%p cmd=%p\n",
+                g_XRDebugFrame, Eye, bAfterInfo,
+                AfterRender.SourceImage, AfterRender.CommandBuffer );
+    if( bAfterInfo )
+        Frame = AfterRender;
+    return bAfterInfo;
+}
+
+static void RenderGameStereoXR( void )
+{
+    x_DebugMsg( "A51XR frame=%u render=stereo begin bridge=%d external=%d\n",
+                g_XRDebugFrame, g_XRGameFrameBridge,
+                sdleng_HasVulkanExternalDevice() );
+    if( !g_XRGameFrameBridge || !sdleng_HasVulkanExternalDevice() )
+    {
+        x_DebugMsg( "A51XR frame=%u render=stereo fallback bridge=%d external=%d\n",
+                    g_XRDebugFrame, g_XRGameFrameBridge,
+                    sdleng_HasVulkanExternalDevice() );
         RenderGame();
         return;
     }
 
     sdleng_vulkan_frame_info LeftFrame = {};
-    if( sdleng_GetVulkanFrameInfoForEye( 0, LeftFrame ) )
+    sdleng_vulkan_frame_info RightFrame = {};
+    /* Render the eye that was previously healthy first.  If the legacy
+     * renderer leaks first-pass state, this makes the second eye a useful
+     * control: the result tells us whether the black image follows render
+     * order or the eye/swapchain itself. */
+    const xbool bRightRendered = RenderGameStereoEyeXR( 1, RightFrame );
+    if( !bRightRendered )
     {
-        g_XRRenderWidth  = LeftFrame.Width;
-        g_XRRenderHeight = LeftFrame.Height;
+        RenderGame();
+        g_XRActiveEye = -1;
+        return;
     }
 
-    g_XRActiveEye = 0;
-    RenderGame();
-    /* RenderGame may leave the final SDL render task open.  Close the
-     * backend pass before switching the native color target to eye 1. */
-    rtarget_EndPass();
-
-    if( !sdleng_SetVulkanRenderEye( 1 ) )
+    const xbool bLeftRendered = RenderGameStereoEyeXR( 0, LeftFrame );
+    if( !bLeftRendered )
     {
         g_XRActiveEye = -1;
         return;
     }
 
-    sdleng_vulkan_frame_info RightFrame = {};
-    if( sdleng_GetVulkanFrameInfoForEye( 1, RightFrame ) )
-    {
-        g_XRRenderWidth  = RightFrame.Width;
-        g_XRRenderHeight = RightFrame.Height;
-    }
-
-    g_XRActiveEye = 1;
-    RenderGame();
-    rtarget_EndPass();
     g_XRActiveEye = -1;
     g_XRRenderWidth = 0;
     g_XRRenderHeight = 0;
     g_XRFrameStereoRendered = TRUE;
+    x_DebugMsg( "A51XR frame=%u render=stereo done leftSrc=%p rightSrc=%p\n",
+                g_XRDebugFrame, LeftFrame.SourceImage, RightFrame.SourceImage );
 }
 #endif
 

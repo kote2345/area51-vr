@@ -1288,20 +1288,6 @@ bool SDL_GetGPUVulkanFrameInfo(
         return false;
     }
 
-    {
-        static int a51FrameInfoLogCount = 0;
-        if (a51FrameInfoLogCount < 32) {
-            SDL_Log("A51 SDL frame info texture=%p container=%p active=%p image=%p cycle=%d ref=%d",
-                    (void *)texture,
-                    (void *)container,
-                    (void *)container->activeTexture,
-                    (void *)container->activeTexture->image,
-                    container->canBeCycled ? 1 : 0,
-                    SDL_GetAtomicInt(&container->activeTexture->referenceCount));
-            a51FrameInfoLogCount += 1;
-        }
-    }
-
     info->command_buffer = (void *)command->commandBuffer;
     info->source_image = (void *)container->activeTexture->image;
     info->width = container->header.info.width;
