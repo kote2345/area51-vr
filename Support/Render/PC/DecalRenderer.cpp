@@ -855,6 +855,18 @@ xbool DecalRenderer::BuildPipelineDesc( render_pipeline_desc& out, PipelineDesc 
     out.Shader.Topology = SHADER_TOPOLOGY_TRIANGLE_LIST;
     out.Depth = rstate_GetDepthDesc( desc.Depth );
     out.Raster = rstate_GetRasterDesc( desc.Raster );
+    /* The legacy decal path applies kDecalNearZBias to WorldToClip.  The
+     * multiview vertex shader uses the per-eye matrices instead, so that
+     * projection bias is not present there.  Add the equivalent receiver
+     * offset at rasterization time to keep coplanar decals out of z-fighting
+     * with the surface in both eye layers. */
+    if( Multiview )
+    {
+        out.Raster.DepthBias = -1.0f;
+        out.Raster.DepthBiasClamp = 0.0f;
+        out.Raster.SlopeScaledDepthBias = -1.0f;
+        out.Raster.bDepthBiasEnable = TRUE;
+    }
     out.ColorCount = 1;
     out.DepthFormat = desc.Pass.DepthFormat;
     out.SampleCount = desc.Pass.SampleCount;
