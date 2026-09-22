@@ -11,6 +11,19 @@
 #include "PrimitiveMgr.hpp"
 
 #include "x_debug.hpp"
+#include "../GeomMgr/GeomMgr.hpp"
+
+namespace
+{
+struct PrimitiveMultiviewConstants
+{
+    PrimitiveMgr::DrawConstants Frame;
+    matrix4                    StereoLocalToClip[2];
+};
+
+static_assert( sizeof( PrimitiveMultiviewConstants ) == 208,
+               "primitive multiview constants must match HLSL" );
+}
 
 //=========================================================================
 // GLOBAL INSTANCE
@@ -23,7 +36,8 @@ PrimitiveMgr g_PrimitiveMgr;
 //=========================================================================
 
 PrimitiveMgr::PrimitiveMgr( void )
-    : m_vertexMgr(), m_vertexShader(), m_pixelShader(), m_pipelines(), m_drawUniformVertexSlot( 0xffffffffu ),
+    : m_vertexMgr(), m_vertexShader(), m_multiviewVertexShader(), m_pixelShader(), m_pipelines(),
+      m_drawUniformVertexSlot( 0xffffffffu ),
       m_drawUniformPixelSlot( 0xffffffffu ), m_textureSlot( 0xffffffffu ), m_sceneTextureSlot( 0xffffffffu ),
       m_pDistortionScene( NULL ), m_whiteTexture(), m_isInitialized( FALSE ), m_batchDesc(), m_batchVertices(),
       m_batchIndices(), m_isBatchOpen( FALSE ), m_queuedVertices(), m_queuedIndices(), m_queuedDraws(),
@@ -67,6 +81,7 @@ void PrimitiveMgr::Kill( void )
     vram_DestroyTexture( m_whiteTexture );
 
     shader_Destroy( m_pixelShader );
+    shader_Destroy( m_multiviewVertexShader );
     shader_Destroy( m_vertexShader );
 
     m_vertexMgr.Kill();
@@ -95,6 +110,7 @@ void PrimitiveMgr::BeginRender( void )
 xbool PrimitiveMgr::LoadShaders( void )
 {
     shader_LoadFromEcs( m_vertexShader, "primitive_basic_vs.vs.ecs" );
+    shader_LoadFromEcs( m_multiviewVertexShader, "primitive_multiview_vs.vs.ecs" );
     shader_LoadFromEcs( m_pixelShader, "primitive_basic_ps.ps.ecs" );
 
     if ( !m_vertexShader || !m_pixelShader )
@@ -350,7 +366,10 @@ xbool PrimitiveMgr::BuildPipelineDesc( render_pipeline_desc& pipelineDesc, Pipel
         shader_vertex_element( 2, 0, SHADER_VERTEX_FORMAT_FLOAT2, offsetof( Vertex, UV ) ) };
 
     pipelineDesc                          = render_pipeline_desc();
-    pipelineDesc.Shader.pVertexShader     = &m_vertexShader;
+    xbool const Multiview = ( rtarget_GetCurrentViewMask() == 0x3u );
+    if( Multiview && !m_multiviewVertexShader )
+        return FALSE;
+    pipelineDesc.Shader.pVertexShader     = Multiview ? &m_multiviewVertexShader : &m_vertexShader;
     pipelineDesc.Shader.pPixelShader      = &m_pixelShader;
     pipelineDesc.Shader.pVertexBuffers    = &vertexBuffer;
     pipelineDesc.Shader.VertexBufferCount = 1;
@@ -362,6 +381,7 @@ xbool PrimitiveMgr::BuildPipelineDesc( render_pipeline_desc& pipelineDesc, Pipel
     pipelineDesc.ColorCount               = 1;
     pipelineDesc.DepthFormat              = desc.Pass.DepthFormat;
     pipelineDesc.SampleCount              = desc.Pass.SampleCount;
+    pipelineDesc.ViewMask                 = Multiview ? 0x3u : 0u;
     pipelineDesc.pDebugName               = desc.pDebugName ? desc.pDebugName : "PrimitivePipeline";
 
     pipelineDesc.ColorTargets[0].Format = desc.Pass.ColorFormat;
@@ -380,7 +400,7 @@ render_pipeline* PrimitiveMgr::GetOrCreatePipeline( PipelineDesc const& desc, xb
         return NULL;
     }
 
-    u64 const key = MakePipelineKey( desc );
+    u64 const key = MakePipelineKey( desc ) | ((rtarget_GetCurrentViewMask() == 0x3u) ? (1ull << 56) : 0ull);
     return isPrewarm ? m_pipelines.Prewarm( key, pipelineDesc ) : m_pipelines.GetOrCreate( key, pipelineDesc );
 }
 
@@ -396,8 +416,26 @@ xbool PrimitiveMgr::BindPipeline( PipelineDesc const& desc )
 
 xbool PrimitiveMgr::BindResources( BatchDesc const& desc, s32 drawIndex )
 {
-    if ( !shader_PushUniformData( SHADER_STAGE_VERTEX, m_drawUniformVertexSlot, &desc.Constants,
-                                  sizeof( desc.Constants ) ) )
+    xbool const Multiview = ( rtarget_GetCurrentViewMask() == 0x3u );
+    matrix4 StereoView[2];
+    matrix4 StereoProjection[2];
+    vector4 StereoCameraPosition[2];
+    PrimitiveMultiviewConstants MultiviewConstants;
+    void const* pVertexConstants = &desc.Constants;
+    u32 const VertexConstantsSize = sizeof( desc.Constants );
+    if( Multiview )
+    {
+        if( !m_multiviewVertexShader ||
+            !g_GeomMgr.GetMultiviewFrameData( StereoView, StereoProjection, StereoCameraPosition ) )
+            return FALSE;
+        MultiviewConstants.Frame = desc.Constants;
+        for( u32 Eye = 0; Eye < 2; ++Eye )
+            MultiviewConstants.StereoLocalToClip[Eye] =
+                (StereoProjection[Eye] * StereoView[Eye]) * desc.LocalToWorld;
+        pVertexConstants = &MultiviewConstants;
+    }
+    if ( !shader_PushUniformData( SHADER_STAGE_VERTEX, m_drawUniformVertexSlot, pVertexConstants,
+                                  Multiview ? sizeof( MultiviewConstants ) : VertexConstantsSize ) )
     {
         x_DebugMsg( "PrimitiveMgr: failed to push vertex constants packet=%d output=%d\n",
                     drawIndex, static_cast<s32>( desc.Output ) );

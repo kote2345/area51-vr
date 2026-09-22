@@ -56,6 +56,8 @@ public:
     void  PresentFinalColor   ( void );
     void  ClearGBuffer        ( void );
     void  BeginFrame          ( void );
+    void  SetMultiviewEnabled ( xbool enabled );
+    xbool IsMultiviewEnabled  ( void ) const { return m_multiviewEnabled; }
     void  SetTargetOverride   ( rtarget const* pColor, rtarget const* pDepth );
     xbool GetFrameTargets     ( frame_render_targets& targets ) const;
     
@@ -76,6 +78,8 @@ private:
     xbool m_clearGBufferOnBind;
     u32   m_gBufferWidth;
     u32   m_gBufferHeight;
+    u32   m_gBufferLayerCount;
+    xbool m_multiviewEnabled;
     
     rtarget m_sceneColorTarget;
     rtarget m_gBufferTarget[g_gBufferMrtCount];

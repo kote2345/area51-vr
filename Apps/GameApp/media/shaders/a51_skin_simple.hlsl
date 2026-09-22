@@ -97,6 +97,45 @@ GEOM_PIXEL_INPUT VSMain( VS_INPUT input )
     return output;
 }
 
+#if defined(A51_MULTIVIEW)
+GEOM_PIXEL_INPUT VSMainMultiview( VS_INPUT input, uint viewIndex : SV_ViewID )
+{
+    GEOM_PIXEL_INPUT output;
+    const uint instanceID = input.InstanceIndex;
+    const uint boneRemapOffset = input.BoneRemapOffset;
+
+    uint  index1  = (uint)input.PosIndex.w;
+    uint  index2  = (uint)input.NormIndex.w;
+    float weight1 = input.UVWeights.z;
+    float weight2 = input.UVWeights.w;
+
+    float4x4 bone1 = SkinGetBoneL2W( instanceID, boneRemapOffset, index1 );
+    float4x4 bone2 = SkinGetBoneL2W( instanceID, boneRemapOffset, index2 );
+
+    float3 pos1 = mul( bone1, float4( input.PosIndex.xyz, 1.0f ) ).xyz;
+    float3 pos2 = mul( bone2, float4( input.PosIndex.xyz, 1.0f ) ).xyz;
+    float3 skinnedPos = pos1 * weight1 + pos2 * weight2;
+
+    float3 norm1 = mul( (float3x3)bone1, input.NormIndex.xyz );
+    float3 norm2 = mul( (float3x3)bone2, input.NormIndex.xyz );
+    float3 skinnedNorm = normalize( norm1 * weight1 + norm2 * weight2 );
+
+    float4 worldPos = float4( skinnedPos, 1.0f );
+    float4 viewPos  = mul( StereoView[viewIndex], worldPos );
+    output.Pos      = mul( StereoProjection[viewIndex], viewPos );
+
+    float3 viewNormal = normalize( mul( (float3x3)StereoView[viewIndex], skinnedNorm ) );
+    output.WorldPos   = worldPos.xyz;
+    output.Normal     = skinnedNorm;
+    output.ViewNormal = viewNormal;
+    output.ViewVector = worldPos.xyz - StereoCameraPosition[viewIndex].xyz;
+    output.UV         = input.UVWeights.xy + UVAnim.xy;
+    output.InstanceID = instanceID;
+
+    return output;
+}
+#endif
+
 //==============================================================================
 
 GEOM_PIXEL_OUTPUT PSMain( GEOM_PIXEL_INPUT input, bool isFrontFace : SV_IsFrontFace )

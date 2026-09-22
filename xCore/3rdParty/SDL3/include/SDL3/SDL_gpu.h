@@ -1920,9 +1920,7 @@ typedef struct SDL_GPUGraphicsPipelineTargetInfo
     Uint32 num_color_targets;                                        /**< The number of color target descriptions in the above array. */
     SDL_GPUTextureFormat depth_stencil_format;                       /**< The pixel format of the depth-stencil target. Ignored if has_depth_stencil_target is false. */
     bool has_depth_stencil_target;                                   /**< true specifies that the pipeline uses a depth-stencil target. */
-    Uint8 padding1;
-    Uint8 padding2;
-    Uint8 padding3;
+    Uint32 view_mask;                                                 /**< Vulkan multiview view mask. Zero selects ordinary rendering. */
 } SDL_GPUGraphicsPipelineTargetInfo;
 
 /**
@@ -2031,6 +2029,7 @@ typedef struct SDL_GPUColorTargetInfo
     bool cycle_resolve_texture;      /**< true cycles the resolve texture if the resolve texture is bound. Ignored if a RESOLVE* store_op is not used. */
     Uint8 padding1;
     Uint8 padding2;
+    Uint32 view_mask;                /**< Vulkan multiview view mask. Zero selects ordinary rendering. */
 } SDL_GPUColorTargetInfo;
 
 /**
@@ -2092,6 +2091,7 @@ typedef struct SDL_GPUDepthStencilTargetInfo
     Uint8 clear_stencil;                   /**< The value to clear the stencil component to at the beginning of the render pass. Ignored if SDL_GPU_LOADOP_CLEAR is not used. */
     Uint8 mip_level;                       /**< The mip level to use as the depth stencil target. */
     Uint8 layer;                           /**< The layer index to use as the depth stencil target. */
+    Uint32 view_mask;                      /**< Vulkan multiview view mask. Zero selects ordinary rendering. */
 } SDL_GPUDepthStencilTargetInfo;
 
 /**

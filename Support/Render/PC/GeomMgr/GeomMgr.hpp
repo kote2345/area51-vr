@@ -133,6 +133,17 @@ struct GeomFrameConstants
 
 static_assert( sizeof( GeomFrameConstants ) == 320, "cbFrameConstants layout must match HLSL" );
 
+struct GeomMultiviewFrameConstants
+{
+    GeomFrameConstants Frame;
+    matrix4           StereoView[2];
+    matrix4           StereoProjection[2];
+    vector4           StereoCameraPosition[2];
+};
+
+static_assert( sizeof( GeomMultiviewFrameConstants ) == 608,
+               "multiview cbFrameConstants layout must match HLSL" );
+
 //------------------------------------------------------------------------------
 
 struct ProjectionTextureConstants
@@ -335,6 +346,12 @@ class GeomMgr
     xbool                ExecutePacket( s32 packetIndex, geom_pass_desc const& pass );
     xbool                ExecuteGBuffer( geom_pass_desc const& pass );
     void                 ClearPackets( void );
+    xbool                GetMultiviewFrameData( matrix4 stereoView[2], matrix4 stereoProjection[2],
+                                                 vector4 stereoCameraPosition[2] ) const;
+    void                 SetMultiviewFrameData( matrix4 const stereoView[2], matrix4 const stereoProjection[2],
+                                                 vector4 const stereoCameraPosition[2] );
+    void                 ClearMultiviewFrameData( void );
+    xbool                SupportsMultiview( void ) const;
 
   protected:
     xbool HasRigidBatch( void ) const;
@@ -538,6 +555,11 @@ class GeomMgr
     ShaderBindingLayout const* GetShaderBindings( geom_shader_kind kind ) const;
     rstate_sampler const*      GetSampler( rstate_sampler_preset preset ) const;
     xbool                      PushFrameConstants( geom_shader_kind kind, GeomFrameConstants const& frame ) const;
+    xbool                      PushMultiviewFrameConstants( geom_shader_kind kind,
+                                                             GeomFrameConstants const& frame,
+                                                             matrix4 const stereoView[2],
+                                                             matrix4 const stereoProjection[2],
+                                                             vector4 const stereoCameraPosition[2] ) const;
     xbool BindPixelTexture( u32 slot, shader_resource const* pResource, rstate_sampler const* pSampler ) const;
     xbool BindPacketResources( GeomDrawPacket const& packet );
     xbool BindRigidFrameBuffers( void ) const;
@@ -570,6 +592,10 @@ class GeomMgr
     //--------------------------------------------------------------------------
 
     xbool               m_isInitialized;
+    xbool               m_bMultiviewFrameDataValid;
+    matrix4             m_stereoView[2];
+    matrix4             m_stereoProjection[2];
+    vector4             m_stereoCameraPosition[2];
     RenderPipelineCache m_rigidPipelines;
     RenderPipelineCache m_skinPipelines;
 
@@ -578,6 +604,7 @@ class GeomMgr
     //--------------------------------------------------------------------------
 
     shader                          m_rigidVertexShader;
+    shader                          m_rigidMultiviewVertexShader;
     shader                          m_rigidPixelShader;
     shader                          m_rigidScenePixelShader;
     ShaderBindingLayout             m_rigidShaderBindings;
@@ -605,6 +632,7 @@ class GeomMgr
     //--------------------------------------------------------------------------
 
     shader                                 m_skinVertexShader;
+    shader                                 m_skinMultiviewVertexShader;
     shader                                 m_skinPixelShader;
     shader                                 m_skinScenePixelShader;
     ShaderBindingLayout                    m_skinShaderBindings;
@@ -646,6 +674,7 @@ class GeomMgr
     //--------------------------------------------------------------------------
 
     shader                          m_dynamicVertexShader;
+    shader                          m_dynamicMultiviewVertexShader;
     shader                          m_dynamicPixelShader;
     ShaderBindingLayout             m_dynamicShaderBindings;
     RenderPipelineCache             m_dynamicPipelines;

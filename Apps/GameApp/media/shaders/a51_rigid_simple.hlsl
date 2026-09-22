@@ -91,6 +91,36 @@ GEOM_PIXEL_INPUT VSMain( VS_INPUT input )
     return output;
 }
 
+#if defined(A51_MULTIVIEW)
+GEOM_PIXEL_INPUT VSMainMultiview( VS_INPUT input, uint viewIndex : SV_ViewID )
+{
+    GEOM_PIXEL_INPUT output;
+    const uint instanceID = input.InstanceIndex;
+
+    float4 worldPos    = mul( RigidInstances[instanceID].World, float4( input.Position, 1.0f ) );
+    float4 viewPos     = mul( StereoView[viewIndex], worldPos );
+    float3 worldNormal = normalize( mul( (float3x3)RigidInstances[instanceID].World, input.Normal ) );
+    float3 viewNormal  = normalize( mul( (float3x3)StereoView[viewIndex], worldNormal ) );
+
+    output.Pos        = mul( StereoProjection[viewIndex], viewPos );
+    output.UV         = input.UV + UVAnim.xy;
+    output.WorldPos   = worldPos.xyz;
+    output.Normal     = worldNormal;
+    output.ViewVector = worldPos.xyz - StereoCameraPosition[viewIndex].xyz;
+    output.ViewNormal = viewNormal;
+    output.InstanceID = instanceID;
+
+    output.Color = 1.0f.xxxx;
+    if( RigidInstances[instanceID].ColorOffset != 0xFFFFFFFFu )
+    {
+        const uint colorIndex = RigidInstances[instanceID].ColorOffset + input.VertexIndex;
+        output.Color = DecodeRigidVertexColor( RigidVertexColors[colorIndex] );
+    }
+
+    return output;
+}
+#endif
+
 //==============================================================================
 
 GEOM_PIXEL_OUTPUT PSMain( GEOM_PIXEL_INPUT input, bool isFrontFace : SV_IsFrontFace )

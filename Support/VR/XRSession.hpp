@@ -23,6 +23,7 @@ struct vulkan_device_info
     void* Device;
     void* Queue;
     u32   QueueFamilyIndex;
+    xbool MultiviewEnabled;
 };
 
 struct vulkan_frame_info
@@ -77,9 +78,11 @@ public:
                                       f32 DistanceMeters = 1.8f );
     xbool           PrepareStereoFrame( const vulkan_frame_info& LeftFrame,
                                         const vulkan_frame_info& RightFrame );
+    xbool           PrepareMultiviewFrame( const vulkan_frame_info& ArrayFrame );
     xbool           FinishFrame    ( void );
     void            CancelFrame    ( void );
     xbool           GetVulkanDeviceInfo( vulkan_device_info& DeviceInfo ) const;
+    xbool           SupportsMultiview( void ) const;
     xbool           GetRecommendedRenderSize( u32& Width, u32& Height ) const;
 
     xbool           IsRunning       ( void ) const;
@@ -92,6 +95,9 @@ private:
 
     struct Impl;
     xbool           InitializeInternal( Runtime& Runtime );
+    xbool           PrepareStereoFrameInternal( const vulkan_frame_info& LeftFrame,
+                                                const vulkan_frame_info& RightFrame,
+                                                xbool bArraySource );
     Impl*           m_pImpl;
     session_state   m_State;
     char            m_LastError[256];

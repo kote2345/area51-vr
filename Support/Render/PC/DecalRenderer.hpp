@@ -88,6 +88,7 @@ public:
 
     s32   GetQueuedDrawCount ( void ) const;
     xbool IsQueuedDrawGlow   ( s32 drawIndex ) const;
+    xbool SupportsMultiview  ( void ) const { return m_multiviewVertexShader; }
 
 private:
     struct PipelineDesc
@@ -162,6 +163,7 @@ private:
 private:
     RuntimeVertexMgr    m_vertexMgr;
     shader              m_vertexShader;
+    shader              m_multiviewVertexShader;
     shader              m_pixelShader;
     ShaderBindings      m_bindings;
     RenderPipelineCache m_pipelines;

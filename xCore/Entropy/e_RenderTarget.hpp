@@ -85,6 +85,7 @@ struct rtarget_desc
 {
     u32             Width;
     u32             Height;
+    u32             LayerCount;
     rtarget_format  Format;
     u32             SampleCount;
     u32             SampleQuality;
@@ -97,6 +98,7 @@ struct rtarget_desc
     rtarget_desc( void ) :
         Width         ( 0 ),
         Height        ( 0 ),
+        LayerCount    ( 1 ),
         Format        ( RTARGET_FORMAT_RGBA8 ),
         SampleCount   ( 1 ),
         SampleQuality ( 0 ),
@@ -233,12 +235,14 @@ struct rtarget_pass_desc
     u32                                  ColorCount;
     const rtarget_depth_attachment_desc* pDepthStencil;
     const char*                          pDebugName;
+    u32                                  ViewMask;
 
     rtarget_pass_desc( void ) :
         pColors      ( NULL ),
         ColorCount   ( 0 ),
         pDepthStencil( NULL ),
-        pDebugName   ( NULL )
+        pDebugName   ( NULL ),
+        ViewMask     ( 0 )
     {
     }
 };
@@ -354,6 +358,7 @@ const rtarget*      rtarget_GetBackBuffer       ( void );
 const rtarget*      rtarget_GetCurrentTarget    ( u32 Index );
 u32                 rtarget_GetCurrentCount     ( void );
 const rtarget*      rtarget_GetCurrentDepth     ( void );
+u32                 rtarget_GetCurrentViewMask  ( void );
 
 //==============================================================================
 //  COPY AND RESOURCE ACCESS

@@ -38,6 +38,7 @@ struct sdlstate_pipeline_key
     u32                             ColorTargetCount;
     SDL_GPUTextureFormat            DepthStencilFormat;
     xbool                           bHasDepthStencilTarget;
+    u32                             ViewMask;
 
     sdlstate_pipeline_key( void ) :
         VertexShaderSerial    ( 0 ),
@@ -52,7 +53,8 @@ struct sdlstate_pipeline_key
         DepthStencilState     (),
         ColorTargetCount      ( 0 ),
         DepthStencilFormat    ( SDL_GPU_TEXTUREFORMAT_INVALID ),
-        bHasDepthStencilTarget( FALSE )
+        bHasDepthStencilTarget( FALSE ),
+        ViewMask              ( 0 )
     {
         x_memset( &RasterizerState,   0, sizeof(RasterizerState) );
         x_memset( &MultisampleState,  0, sizeof(MultisampleState) );
@@ -576,7 +578,8 @@ xbool sdlstate_PipelineKeysEqual( const sdlstate_pipeline_key& A,
         (A.PrimitiveType          != B.PrimitiveType)          ||
         (A.ColorTargetCount       != B.ColorTargetCount)       ||
         (A.DepthStencilFormat     != B.DepthStencilFormat)     ||
-        (A.bHasDepthStencilTarget != B.bHasDepthStencilTarget) )
+        (A.bHasDepthStencilTarget != B.bHasDepthStencilTarget) ||
+        (A.ViewMask               != B.ViewMask) )
     {
         return FALSE;
     }
@@ -952,6 +955,9 @@ const rstate_sampler_desc& rstate_GetSamplerDesc( rstate_sampler_preset Preset )
 
 xbool render_CreatePipeline( render_pipeline& Pipeline, const render_pipeline_desc& Desc )
 {
+    if( Desc.ViewMask && !sdleng_VulkanMultiviewEnabled() )
+        return FALSE;
+
     if( !g_pSDLGPUDevice )
         return FALSE;
 
@@ -1115,6 +1121,7 @@ xbool render_CreatePipeline( render_pipeline& Pipeline, const render_pipeline_de
     CreateInfo.target_info.num_color_targets = Desc.ColorCount;
     CreateInfo.target_info.depth_stencil_format = DepthFormat;
     CreateInfo.target_info.has_depth_stencil_target = bHasDepth ? true : false;
+    CreateInfo.target_info.view_mask = Desc.ViewMask;
 
     sdlstate_pipeline_key Key;
     Key.VertexShaderSerial     = pVertexShaderBackend->Serial;
@@ -1130,6 +1137,7 @@ xbool render_CreatePipeline( render_pipeline& Pipeline, const render_pipeline_de
     Key.ColorTargetCount       = CreateInfo.target_info.num_color_targets;
     Key.DepthStencilFormat     = CreateInfo.target_info.depth_stencil_format;
     Key.bHasDepthStencilTarget = CreateInfo.target_info.has_depth_stencil_target ? TRUE : FALSE;
+    Key.ViewMask               = CreateInfo.target_info.view_mask;
     if( Key.ColorTargetCount )
     {
         x_memcpy( Key.ColorTargets,

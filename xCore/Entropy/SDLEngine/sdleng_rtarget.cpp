@@ -20,6 +20,31 @@
 #include "x_stdio.hpp"
 #endif
 
+xbool sdleng_GetVulkanFrameInfoForTarget( const rtarget& Target,
+                                         sdleng_vulkan_frame_info& Info )
+{
+    if( !g_pSDLGPUDevice || !sdleng_GetCommandBuffer() ||
+        !Target.pBackend || !Target.pBackend->pTexture )
+    {
+        return FALSE;
+    }
+
+    SDL_GPUVulkanFrameInfo SDLInfo;
+    if( !SDL_GetGPUVulkanFrameInfo( g_pSDLGPUDevice,
+                                    sdleng_GetCommandBuffer(),
+                                    Target.pBackend->pTexture,
+                                    &SDLInfo ) )
+    {
+        return FALSE;
+    }
+
+    Info.CommandBuffer = SDLInfo.command_buffer;
+    Info.SourceImage = SDLInfo.source_image;
+    Info.Width = Target.Desc.Width;
+    Info.Height = Target.Desc.Height;
+    return TRUE;
+}
+
 //==============================================================================
 //  LOCAL STORAGE
 //==============================================================================
@@ -54,6 +79,7 @@ struct sdlrtarget_cache
     const rtarget* pCurrentTargets[RTARGET_MAX_TARGETS];
     const rtarget* pCurrentDepth;
     u32           CurrentCount;
+    u32           CurrentViewMask;
     xbool         bInitialized;
     xbool         bBackBufferValid;
 
@@ -62,6 +88,7 @@ struct sdlrtarget_cache
         BackBufferDepth (),
         pCurrentDepth  ( NULL ),
         CurrentCount   ( 0 ),
+        CurrentViewMask( 0 ),
         bInitialized   ( FALSE ),
         bBackBufferValid( FALSE )
     {
@@ -196,6 +223,7 @@ void sdlrtarget_ClearCurrentPass( void )
     x_memset( s_TargetCache.pCurrentTargets, 0, sizeof(s_TargetCache.pCurrentTargets) );
     s_TargetCache.pCurrentDepth = NULL;
     s_TargetCache.CurrentCount  = 0;
+    s_TargetCache.CurrentViewMask = 0;
 }
 
 //==============================================================================
@@ -457,6 +485,7 @@ xbool sdlrtarget_ValidateResolveTarget( const rtarget& Target, const rtarget& Re
 
 static
 xbool sdlrtarget_FillColorTargetInfo( const rtarget_color_attachment_desc& Src,
+                                      u32 ViewMask,
                                       SDL_GPUColorTargetInfo& Dst )
 {
     x_memset( &Dst, 0, sizeof(Dst) );
@@ -469,6 +498,15 @@ xbool sdlrtarget_FillColorTargetInfo( const rtarget_color_attachment_desc& Src,
 
     if( (Src.MipLevel != 0) || (Src.Layer != 0) )
         return FALSE;
+
+    if( ViewMask )
+    {
+        u32 RequiredLayers = 0;
+        for( u32 Mask = ViewMask; Mask; Mask >>= 1 )
+            RequiredLayers++;
+        if( Src.pTarget->Desc.LayerCount < RequiredLayers )
+            return FALSE;
+    }
 
     SDL_GPUStoreOp StoreOp;
     if( !sdlrtarget_ToSDLStoreOp( Src.StoreOp, StoreOp ) )
@@ -484,6 +522,7 @@ xbool sdlrtarget_FillColorTargetInfo( const rtarget_color_attachment_desc& Src,
     Dst.load_op              = sdlrtarget_ToSDLLoadOp( Src.LoadOp );
     Dst.store_op             = StoreOp;
     Dst.cycle                = Src.bCycle ? true : false;
+    Dst.view_mask            = ViewMask;
 
     if( (Src.StoreOp == RTARGET_STORE_RESOLVE) ||
         (Src.StoreOp == RTARGET_STORE_RESOLVE_AND_STORE) )
@@ -496,6 +535,15 @@ xbool sdlrtarget_FillColorTargetInfo( const rtarget_color_attachment_desc& Src,
             (Src.ResolveLayer != 0) )
         {
             return FALSE;
+        }
+
+        if( ViewMask )
+        {
+            u32 RequiredLayers = 0;
+            for( u32 Mask = ViewMask; Mask; Mask >>= 1 )
+                RequiredLayers++;
+            if( Src.pResolveTarget->Desc.LayerCount < RequiredLayers )
+                return FALSE;
         }
 
         Dst.resolve_texture       = Src.pResolveTarget->pBackend->pTexture;
@@ -515,6 +563,7 @@ xbool sdlrtarget_FillColorTargetInfo( const rtarget_color_attachment_desc& Src,
 
 static
 xbool sdlrtarget_FillDepthTargetInfo( const rtarget_depth_attachment_desc& Src,
+                                      u32 ViewMask,
                                       SDL_GPUDepthStencilTargetInfo& Dst )
 {
     x_memset( &Dst, 0, sizeof(Dst) );
@@ -525,9 +574,17 @@ xbool sdlrtarget_FillDepthTargetInfo( const rtarget_depth_attachment_desc& Src,
     if( !Src.pTarget->bIsDepthTarget )
         return FALSE;
 
-    // rtarget textures are currently always single-level, single-layer 2D textures.
     if( (Src.MipLevel != 0) || (Src.Layer != 0) )
         return FALSE;
+
+    if( ViewMask )
+    {
+        u32 RequiredLayers = 0;
+        for( u32 Mask = ViewMask; Mask; Mask >>= 1 )
+            RequiredLayers++;
+        if( Src.pTarget->Desc.LayerCount < RequiredLayers )
+            return FALSE;
+    }
 
     SDL_GPUStoreOp DepthStoreOp;
     SDL_GPUStoreOp StencilStoreOp;
@@ -555,6 +612,7 @@ xbool sdlrtarget_FillDepthTargetInfo( const rtarget_depth_attachment_desc& Src,
     Dst.clear_stencil    = Src.ClearStencil;
     Dst.mip_level        = (Uint8)Src.MipLevel;
     Dst.layer            = (Uint8)Src.Layer;
+    Dst.view_mask         = ViewMask;
 
     return TRUE;
 }
@@ -613,7 +671,8 @@ xbool rtarget_Create( rtarget& Target, const rtarget_desc& Desc )
     if( !g_pSDLGPUDevice )
         return FALSE;
 
-    if( (Desc.Width == 0) || (Desc.Height == 0) || (Desc.SampleCount == 0) )
+    if( (Desc.Width == 0) || (Desc.Height == 0) ||
+        (Desc.LayerCount == 0) || (Desc.SampleCount == 0) )
         return FALSE;
 
     if( Desc.SampleQuality != 0 )
@@ -640,7 +699,10 @@ xbool rtarget_Create( rtarget& Target, const rtarget_desc& Desc )
     if( Desc.bBindAsTexture )
         Usage |= SDL_GPU_TEXTUREUSAGE_SAMPLER;
 
-    if( !SDL_GPUTextureSupportsFormat( g_pSDLGPUDevice, Format, SDL_GPU_TEXTURETYPE_2D, Usage ) )
+    const SDL_GPUTextureType TextureType = (Desc.LayerCount > 1)
+                                        ? SDL_GPU_TEXTURETYPE_2D_ARRAY
+                                        : SDL_GPU_TEXTURETYPE_2D;
+    if( !SDL_GPUTextureSupportsFormat( g_pSDLGPUDevice, Format, TextureType, Usage ) )
         return FALSE;
 
     SDL_PropertiesID Props = SDL_CreateProperties();
@@ -687,12 +749,12 @@ xbool rtarget_Create( rtarget& Target, const rtarget_desc& Desc )
 
     SDL_GPUTextureCreateInfo CreateInfo;
     x_memset( &CreateInfo, 0, sizeof(CreateInfo) );
-    CreateInfo.type                 = SDL_GPU_TEXTURETYPE_2D;
+    CreateInfo.type                 = TextureType;
     CreateInfo.format               = Format;
     CreateInfo.usage                = Usage;
     CreateInfo.width                = Desc.Width;
     CreateInfo.height               = Desc.Height;
-    CreateInfo.layer_count_or_depth = 1;
+    CreateInfo.layer_count_or_depth = Desc.LayerCount;
     CreateInfo.num_levels           = 1;
     CreateInfo.sample_count         = SampleCount;
     CreateInfo.props                = Props;
@@ -839,6 +901,9 @@ xbool rtarget_BeginPass( const rtarget_pass_desc& Desc )
     if( (Desc.ColorCount == 0) && !Desc.pDepthStencil )
         return FALSE;
 
+    if( Desc.ViewMask && !sdleng_VulkanMultiviewEnabled() )
+        return FALSE;
+
     if( Desc.ColorCount > RTARGET_MAX_TARGETS )
         return FALSE;
 
@@ -856,7 +921,8 @@ xbool rtarget_BeginPass( const rtarget_pass_desc& Desc )
 
     for( u32 i = 0; i < Desc.ColorCount; i++ )
     {
-        if( !sdlrtarget_FillColorTargetInfo( Desc.pColors[i], ColorTargets[i] ) )
+        if( !sdlrtarget_FillColorTargetInfo( Desc.pColors[i], Desc.ViewMask,
+                                             ColorTargets[i] ) )
             return FALSE;
     }
 
@@ -864,7 +930,8 @@ xbool rtarget_BeginPass( const rtarget_pass_desc& Desc )
     SDL_GPUDepthStencilTargetInfo* pDepthTarget = NULL;
     if( Desc.pDepthStencil )
     {
-        if( !sdlrtarget_FillDepthTargetInfo( *Desc.pDepthStencil, DepthTarget ) )
+        if( !sdlrtarget_FillDepthTargetInfo( *Desc.pDepthStencil, Desc.ViewMask,
+                                             DepthTarget ) )
             return FALSE;
 
         pDepthTarget = &DepthTarget;
@@ -878,6 +945,7 @@ xbool rtarget_BeginPass( const rtarget_pass_desc& Desc )
         s_TargetCache.pCurrentTargets[i] = Desc.pColors[i].pTarget;
 
     s_TargetCache.CurrentCount  = Desc.ColorCount;
+    s_TargetCache.CurrentViewMask = Desc.ViewMask;
     s_TargetCache.pCurrentDepth = Desc.pDepthStencil ? Desc.pDepthStencil->pTarget : NULL;
     return TRUE;
 }
@@ -993,6 +1061,11 @@ const rtarget* rtarget_GetCurrentDepth( void )
     return s_TargetCache.pCurrentDepth;
 }
 
+u32 rtarget_GetCurrentViewMask( void )
+{
+    return s_TargetCache.CurrentViewMask;
+}
+
 //==============================================================================
 //  COPY AND RESOURCE ACCESS
 //==============================================================================
@@ -1018,7 +1091,8 @@ xbool rtarget_Copy( const rtarget_copy_desc& Desc )
         return FALSE;
 
     if( (Desc.SrcMipLevel != 0) || (Desc.DstMipLevel != 0) ||
-        (Desc.SrcLayer != 0) || (Desc.DstLayer != 0) )
+        (Desc.SrcLayer >= Desc.pSource->Desc.LayerCount) ||
+        (Desc.DstLayer >= Desc.pDestination->Desc.LayerCount) )
     {
         return FALSE;
     }

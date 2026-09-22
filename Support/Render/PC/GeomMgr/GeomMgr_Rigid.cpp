@@ -28,6 +28,7 @@ xbool GeomMgr::InitRigidShaders( void )
 
     // Initialize member variables
     m_rigidVertexShader = shader();
+    m_rigidMultiviewVertexShader = shader();
     m_rigidPixelShader = shader();
     m_rigidScenePixelShader = shader();
     m_rigidInstanceDataBuffer = rbuffer();
@@ -41,6 +42,7 @@ xbool GeomMgr::InitRigidShaders( void )
     ResetRigidBatch();
 
     shader_LoadFromEcs( m_rigidVertexShader, "rigid_simple_vs.vs.ecs" );
+    shader_LoadFromEcs( m_rigidMultiviewVertexShader, "rigid_multiview_vs.vs.ecs" );
     shader_LoadFromEcs( m_rigidPixelShader, "rigid_simple_ps.ps.ecs" );
     shader_LoadFromEcs( m_rigidScenePixelShader, "rigid_scene_ps.ps.ecs" );
 
@@ -73,6 +75,7 @@ void GeomMgr::KillRigidShaders( void )
 
     DestroyRigidPipelines();
     shader_Destroy( m_rigidVertexShader );
+    shader_Destroy( m_rigidMultiviewVertexShader );
     shader_Destroy( m_rigidPixelShader );
     shader_Destroy( m_rigidScenePixelShader );
 
@@ -307,7 +310,16 @@ xbool GeomMgr::UpdateRigidConstants( material const* pMaterial, u8 uOffset, u8 v
     GeomFrameConstants const frameData =
         BuildFrameConstants( *pView, pMaterial, uOffset, vOffset, TRUE, overrideMat, pass );
 
-    if ( !PushFrameConstants( GEOM_SHADER_RIGID, frameData ) )
+    const xbool bMultiview = (rtarget_GetCurrentViewMask() == 0x3u);
+    if ( bMultiview &&
+         (!m_bMultiviewFrameDataValid ||
+          !PushMultiviewFrameConstants( GEOM_SHADER_RIGID, frameData,
+                                        m_stereoView, m_stereoProjection,
+                                        m_stereoCameraPosition )) )
+    {
+        return FALSE;
+    }
+    if ( !bMultiview && !PushFrameConstants( GEOM_SHADER_RIGID, frameData ) )
     {
         return FALSE;
     }

@@ -18,6 +18,12 @@ shaders:
     {
     }
 
+    shader rigid_multiview_vs vertex a51_rigid_simple.hlsl VSMainMultiview vs_6_1
+    {
+        common_args "-DA51_MULTIVIEW=1"
+        vulkan_args "-fspv-target-env=vulkan1.1"
+    }
+
     shader rigid_simple_ps pixel a51_rigid_simple.hlsl PSMain ps_6_0
     {
     }
@@ -28,6 +34,12 @@ shaders:
 
     shader skin_simple_vs vertex a51_skin_simple.hlsl VSMain vs_6_0
     {
+    }
+
+    shader skin_multiview_vs vertex a51_skin_simple.hlsl VSMainMultiview vs_6_1
+    {
+        common_args "-DA51_MULTIVIEW=1"
+        vulkan_args "-fspv-target-env=vulkan1.1"
     }
 
     shader skin_simple_ps pixel a51_skin_simple.hlsl PSMain ps_6_0
@@ -42,6 +54,12 @@ shaders:
     {
     }
 
+    shader dynamic_geometry_multiview_vs vertex a51_dynamic_geometry.hlsl VSMainMultiview vs_6_1
+    {
+        common_args "-DA51_MULTIVIEW=1"
+        vulkan_args "-fspv-target-env=vulkan1.1"
+    }
+
     shader dynamic_geometry_ps pixel a51_dynamic_geometry.hlsl PSMain ps_6_0
     {
     }
@@ -50,12 +68,24 @@ shaders:
     {
     }
 
+    shader primitive_multiview_vs vertex a51_primitive.hlsl VSMainMultiview vs_6_1
+    {
+        common_args "-DA51_MULTIVIEW=1"
+        vulkan_args "-fspv-target-env=vulkan1.1"
+    }
+
     shader primitive_basic_ps pixel a51_primitive.hlsl PSMain ps_6_0
     {
     }
 
     shader decal_vs vertex a51_decal.hlsl VSMain vs_6_0
     {
+    }
+
+    shader decal_multiview_vs vertex a51_decal.hlsl VSMainMultiview vs_6_1
+    {
+        common_args "-DA51_MULTIVIEW=1"
+        vulkan_args "-fspv-target-env=vulkan1.1"
     }
 
     shader decal_ps pixel a51_decal.hlsl PSMain ps_6_0

@@ -5,12 +5,26 @@
 //=============================================================================
 
 #include "DecalRenderer.hpp"
+#include "GeomMgr/GeomMgr.hpp"
 
 #include "../LightMgr.hpp"
 #include "../ProjTextureMgr.hpp"
 #include "ProjectionAtlas.hpp"
 
 #include "x_debug.hpp"
+
+namespace
+{
+struct DecalMultiviewConstants
+{
+    DecalRenderer::DrawConstants Frame;
+    matrix4                     StereoWorldToClip[2];
+    vector4                     StereoCameraPosition[2];
+};
+
+static_assert( sizeof( DecalMultiviewConstants ) == 288,
+               "decal multiview constants must match HLSL" );
+}
 
 //=============================================================================
 
@@ -130,7 +144,8 @@ DecalRenderer::QueuedDraw::QueuedDraw( void )
 //=============================================================================
 
 DecalRenderer::DecalRenderer( void )
-    : m_vertexMgr(), m_vertexShader(), m_pixelShader(), m_bindings(), m_pipelines(), m_blackCubeTexture(),
+    : m_vertexMgr(), m_vertexShader(), m_multiviewVertexShader(), m_pixelShader(), m_bindings(), m_pipelines(),
+      m_blackCubeTexture(),
       m_lightingBuffer(), m_lightingCapacity( 0 ), m_projectionConstants(), m_frameLighting(), m_queuedVertices(),
       m_queuedIndices(), m_queuedDraws(), m_requestedVertices( 0 ), m_requestedIndices( 0 ), m_requestedDraws( 0 ),
       m_areQueuedDrawsUploaded( FALSE ), m_isInitialized( FALSE )
@@ -179,6 +194,7 @@ void DecalRenderer::Kill( void )
     DestroyPipelines();
     DestroySamplers();
     shader_Destroy( m_pixelShader );
+    shader_Destroy( m_multiviewVertexShader );
     shader_Destroy( m_vertexShader );
     m_vertexMgr.Kill();
 
@@ -242,6 +258,7 @@ xbool DecalRenderer::Reserve( s32 nVertices, s32 nIndices, s32 nDraws )
 xbool DecalRenderer::LoadShaders( void )
 {
     shader_LoadFromEcs( m_vertexShader, "decal_vs.vs.ecs" );
+    shader_LoadFromEcs( m_multiviewVertexShader, "decal_multiview_vs.vs.ecs" );
     shader_LoadFromEcs( m_pixelShader, "decal_ps.ps.ecs" );
     if ( !m_vertexShader || !m_pixelShader )
     {
@@ -826,7 +843,10 @@ xbool DecalRenderer::BuildPipelineDesc( render_pipeline_desc& out, PipelineDesc 
         shader_vertex_element( 2, 0, SHADER_VERTEX_FORMAT_FLOAT2, offsetof( Vertex, UV ) ) };
 
     out = render_pipeline_desc();
-    out.Shader.pVertexShader = &m_vertexShader;
+    xbool const Multiview = ( rtarget_GetCurrentViewMask() == 0x3u );
+    if( Multiview && !m_multiviewVertexShader )
+        return FALSE;
+    out.Shader.pVertexShader = Multiview ? &m_multiviewVertexShader : &m_vertexShader;
     out.Shader.pPixelShader = &m_pixelShader;
     out.Shader.pVertexBuffers = &vertexBuffer;
     out.Shader.VertexBufferCount = 1;
@@ -838,6 +858,7 @@ xbool DecalRenderer::BuildPipelineDesc( render_pipeline_desc& out, PipelineDesc 
     out.ColorCount = 1;
     out.DepthFormat = desc.Pass.DepthFormat;
     out.SampleCount = desc.Pass.SampleCount;
+    out.ViewMask = Multiview ? 0x3u : 0u;
     out.pDebugName = desc.pDebugName ? desc.pDebugName : "DecalPipeline";
     out.ColorTargets[0].Format = desc.Pass.ColorFormat;
     out.ColorTargets[0].Blend = rstate_GetBlendDesc( desc.Blend );
@@ -854,7 +875,7 @@ render_pipeline* DecalRenderer::GetOrCreatePipeline( PipelineDesc const& desc, x
         return NULL;
     }
 
-    u64 const key = MakePipelineKey( desc );
+    u64 const key = MakePipelineKey( desc ) | ((rtarget_GetCurrentViewMask() == 0x3u) ? (1ull << 48) : 0ull);
     return isPrewarm ? m_pipelines.Prewarm( key, pipelineDesc ) : m_pipelines.GetOrCreate( key, pipelineDesc );
 }
 
@@ -952,8 +973,33 @@ xbool DecalRenderer::BindResources( QueuedDraw const& draw, s32 drawIndex, xbool
 
     DrawConstants constants = draw.Constants;
     constants.OutputMode = isGlowPass ? 1u : 0u;
-    if ( !shader_PushUniformData( SHADER_STAGE_VERTEX, m_bindings.DrawConstantsVertex, &constants,
-                                  sizeof( constants ) ) )
+    const u32 ViewMask = rtarget_GetCurrentViewMask();
+    xbool const Multiview = ( ViewMask == 0x3u );
+    DecalMultiviewConstants multiviewConstants;
+    void const* pVertexConstants = &constants;
+    u32 const VertexConstantsSize = sizeof( constants );
+    if( Multiview )
+    {
+        matrix4 StereoView[2];
+        matrix4 StereoProjection[2];
+        vector4 StereoCameraPosition[2];
+        const xbool bFrameDataReady =
+            g_GeomMgr.GetMultiviewFrameData( StereoView, StereoProjection,
+                                             StereoCameraPosition );
+        if( !m_multiviewVertexShader || !bFrameDataReady )
+        {
+                        return FALSE;
+        }
+        multiviewConstants.Frame = constants;
+        for( u32 Eye = 0; Eye < 2; ++Eye )
+        {
+            multiviewConstants.StereoWorldToClip[Eye] = StereoProjection[Eye] * StereoView[Eye];
+            multiviewConstants.StereoCameraPosition[Eye] = StereoCameraPosition[Eye];
+        }
+        pVertexConstants = &multiviewConstants;
+    }
+    if ( !shader_PushUniformData( SHADER_STAGE_VERTEX, m_bindings.DrawConstantsVertex, pVertexConstants,
+                                  Multiview ? sizeof( multiviewConstants ) : VertexConstantsSize ) )
     {
         x_DebugMsg( "DecalRenderer: failed to push vertex constants packet=%d pass=%s\n",
                     drawIndex, ( isGlowPass ? "glow" : "scene" ) );
@@ -1029,6 +1075,12 @@ xbool DecalRenderer::DrawQueuedDraw( s32 drawIndex, PassDesc const& pass )
     }
 
     QueuedDraw const& draw = m_queuedDraws[drawIndex];
+    static u32 DecalDiagnosticSample = 0;
+    if( (drawIndex == 0) && !pass.IsGlowPass &&
+        ((DecalDiagnosticSample++ % 120u) == 0u) )
+    {
+        const u32 ViewMask = rtarget_GetCurrentViewMask();
+            }
     PipelineDesc pipeline;
     pipeline.Pass = pass;
     pipeline.Depth = ( pass.DepthFormat == RTARGET_FORMAT_COUNT )

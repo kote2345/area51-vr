@@ -183,24 +183,24 @@ void RecordGameImageCopy( VkCommandBuffer CommandBuffer,
                           u32 SourceWidth,
                           u32 SourceHeight,
                           u32 DestinationWidth,
-                          u32 DestinationHeight )
+                          u32 DestinationHeight,
+                          u32 SourceLayer = 0,
+                          xbool bSourceShaderRead = FALSE )
 {
-    x_DebugMsg( "A51XR vk-copy begin cmd=%p src=%p dst=%p size=%ux%u->%ux%u\n",
-                reinterpret_cast<void*>( CommandBuffer ),
-                reinterpret_cast<void*>( SourceImage ),
-                reinterpret_cast<void*>( DestinationImage ),
-                SourceWidth, SourceHeight, DestinationWidth, DestinationHeight );
-    VkImageMemoryBarrier SourceToTransfer{
+        VkImageMemoryBarrier SourceToTransfer{
         VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    SourceToTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    SourceToTransfer.srcAccessMask = bSourceShaderRead ? VK_ACCESS_SHADER_READ_BIT :
+                                                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     SourceToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    SourceToTransfer.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    SourceToTransfer.oldLayout = bSourceShaderRead ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL :
+                                                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     SourceToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     SourceToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     SourceToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     SourceToTransfer.image = SourceImage;
     SourceToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     SourceToTransfer.subresourceRange.levelCount = 1;
+    SourceToTransfer.subresourceRange.baseArrayLayer = SourceLayer;
     SourceToTransfer.subresourceRange.layerCount = 1;
 
     VkImageMemoryBarrier DestinationToTransfer{
@@ -220,16 +220,15 @@ void RecordGameImageCopy( VkCommandBuffer CommandBuffer,
         DestinationToTransfer,
     };
     vkCmdPipelineBarrier( CommandBuffer,
-                          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          bSourceShaderRead ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT :
+                                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                           VK_PIPELINE_STAGE_TRANSFER_BIT,
                           0, 0, NULL, 0, NULL,
                           static_cast<u32>( ARRAYSIZE( Barriers ) ), Barriers );
-    x_DebugMsg( "A51XR vk-copy source-destination-barrier src=%p dst=%p\n",
-                reinterpret_cast<void*>( SourceImage ),
-                reinterpret_cast<void*>( DestinationImage ) );
 
     VkImageBlit Blit{};
     Blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    Blit.srcSubresource.baseArrayLayer = SourceLayer;
     Blit.srcSubresource.layerCount = 1;
     Blit.srcOffsets[1] = {
         static_cast<s32>( SourceWidth ), static_cast<s32>( SourceHeight ), 1 };
@@ -246,14 +245,17 @@ void RecordGameImageCopy( VkCommandBuffer CommandBuffer,
     VkImageMemoryBarrier SourceFromTransfer{
         VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
     SourceFromTransfer.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    SourceFromTransfer.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    SourceFromTransfer.dstAccessMask = bSourceShaderRead ? VK_ACCESS_SHADER_READ_BIT :
+                                                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
     SourceFromTransfer.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    SourceFromTransfer.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    SourceFromTransfer.newLayout = bSourceShaderRead ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL :
+                                                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     SourceFromTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     SourceFromTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     SourceFromTransfer.image = SourceImage;
     SourceFromTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     SourceFromTransfer.subresourceRange.levelCount = 1;
+    SourceFromTransfer.subresourceRange.baseArrayLayer = SourceLayer;
     SourceFromTransfer.subresourceRange.layerCount = 1;
 
     VkImageMemoryBarrier DestinationFromTransfer{
@@ -275,14 +277,12 @@ void RecordGameImageCopy( VkCommandBuffer CommandBuffer,
     };
     vkCmdPipelineBarrier( CommandBuffer,
                           VK_PIPELINE_STAGE_TRANSFER_BIT,
-                          VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          bSourceShaderRead ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT :
+                                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                           0, 0, NULL, 0, NULL,
                           static_cast<u32>( ARRAYSIZE( FinalBarriers ) ),
                           FinalBarriers );
-    x_DebugMsg( "A51XR vk-copy end src=%p dst=%p\n",
-                reinterpret_cast<void*>( SourceImage ),
-                reinterpret_cast<void*>( DestinationImage ) );
-}
+    }
 
 } // anonymous namespace
 
@@ -361,6 +361,7 @@ struct VulkanSession::Impl
     XrFrameState PreparedFrameState{ XR_TYPE_FRAME_STATE };
     xbool FrameBegun = FALSE;
     xbool ExternalVulkan = FALSE;
+    xbool MultiviewEnabled = FALSE;
 
     PFN_xrGetVulkanGraphicsRequirements2KHR GetVulkanGraphicsRequirements = NULL;
     PFN_xrGetVulkanGraphicsDevice2KHR GetVulkanGraphicsDevice = NULL;
@@ -458,6 +459,7 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
         m_pImpl->Device = reinterpret_cast<VkDevice>( m_ExternalDevice.Device );
         m_pImpl->Queue = reinterpret_cast<VkQueue>( m_ExternalDevice.Queue );
         m_pImpl->QueueFamilyIndex = m_ExternalDevice.QueueFamilyIndex;
+        m_pImpl->MultiviewEnabled = m_ExternalDevice.MultiviewEnabled;
 
         XrVulkanGraphicsDeviceGetInfoKHR ExternalDeviceInfo{
             XR_TYPE_VULKAN_GRAPHICS_DEVICE_GET_INFO_KHR };
@@ -485,9 +487,11 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
     ApplicationInfo.applicationVersion = 1;
     ApplicationInfo.pEngineName = "Entropy";
     ApplicationInfo.engineVersion = 1;
-    ApplicationInfo.apiVersion = Requirements.minApiVersionSupported
-                               ? Requirements.minApiVersionSupported
-                               : VK_API_VERSION_1_0;
+    ApplicationInfo.apiVersion =
+        (Requirements.maxApiVersionSupported >= VK_API_VERSION_1_1)
+            ? VK_API_VERSION_1_1
+            : ( Requirements.minApiVersionSupported ? Requirements.minApiVersionSupported
+                                                    : VK_API_VERSION_1_0 );
 
     VkInstanceCreateInfo InstanceCreateInfo{
         VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO };
@@ -572,9 +576,42 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
     QueueCreateInfo.queueCount = 1;
     QueueCreateInfo.pQueuePriorities = &QueuePriority;
 
+    VkPhysicalDeviceMultiviewFeatures SupportedMultiview{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES };
+    VkPhysicalDeviceFeatures2 SupportedFeatures{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    SupportedFeatures.pNext = &SupportedMultiview;
+
+    VkPhysicalDeviceMultiviewProperties MultiviewProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_PROPERTIES };
+    VkPhysicalDeviceProperties2 DeviceProperties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2 };
+    DeviceProperties.pNext = &MultiviewProperties;
+
+    PFN_vkGetPhysicalDeviceFeatures2 GetPhysicalDeviceFeatures2 =
+        reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(
+            vkGetInstanceProcAddr( m_pImpl->VkInstanceHandle, "vkGetPhysicalDeviceFeatures2" ) );
+    PFN_vkGetPhysicalDeviceProperties2 GetPhysicalDeviceProperties2 =
+        reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+            vkGetInstanceProcAddr( m_pImpl->VkInstanceHandle, "vkGetPhysicalDeviceProperties2" ) );
+    if( GetPhysicalDeviceFeatures2 && GetPhysicalDeviceProperties2 )
+    {
+        GetPhysicalDeviceFeatures2( m_pImpl->PhysicalDevice, &SupportedFeatures );
+        GetPhysicalDeviceProperties2( m_pImpl->PhysicalDevice, &DeviceProperties );
+    }
+
+    VkPhysicalDeviceMultiviewFeatures EnabledMultiview{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES };
+    EnabledMultiview.multiview =
+        (GetPhysicalDeviceFeatures2 && GetPhysicalDeviceProperties2 &&
+         SupportedMultiview.multiview &&
+         (MultiviewProperties.maxMultiviewViewCount >= 2)) ? VK_TRUE : VK_FALSE;
+
     VkDeviceCreateInfo DeviceCreateInfo{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     DeviceCreateInfo.queueCreateInfoCount = 1;
     DeviceCreateInfo.pQueueCreateInfos = &QueueCreateInfo;
+    DeviceCreateInfo.pNext = EnabledMultiview.multiview ? &EnabledMultiview : NULL;
+    m_pImpl->MultiviewEnabled = EnabledMultiview.multiview ? TRUE : FALSE;
 
     XrVulkanDeviceCreateInfoKHR XrDeviceCreateInfo{
         XR_TYPE_VULKAN_DEVICE_CREATE_INFO_KHR };
@@ -927,15 +964,9 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
             return FALSE;
         }
 
-        x_DebugMsg( "A51XR init swapchain eye=%u handle=%p size=%ux%u images=%u\n",
-                    ViewIndex, reinterpret_cast<void*>( Swapchain.Handle ),
-                    Swapchain.Width, Swapchain.Height, ImageCount );
-        for( u32 ImageIndex = 0; ImageIndex < ImageCount; ++ImageIndex )
+                for( u32 ImageIndex = 0; ImageIndex < ImageCount; ++ImageIndex )
         {
-            x_DebugMsg( "A51XR init swapchain eye=%u image=%u handle=%p\n",
-                        ViewIndex, ImageIndex,
-                        reinterpret_cast<void*>( Swapchain.Images[ImageIndex].image ) );
-        }
+                    }
 
         Swapchain.ImageViews.resize( ImageCount, VK_NULL_HANDLE );
         Swapchain.Framebuffers.resize( ImageCount, VK_NULL_HANDLE );
@@ -1170,10 +1201,6 @@ xbool VulkanSession::PollEvents( void )
         const XrEventDataSessionStateChanged* StateChanged =
             reinterpret_cast<const XrEventDataSessionStateChanged*>( &Event );
         m_pImpl->SessionState = StateChanged->state;
-        x_DebugMsg( "A51XR session event state=%d old=%d running=%d\n",
-                    static_cast<s32>( StateChanged->state ),
-                    static_cast<s32>( m_State ),
-                    m_pImpl->SessionRunning );
 
         if( StateChanged->state == XR_SESSION_STATE_READY &&
             !m_pImpl->SessionRunning )
@@ -1191,8 +1218,7 @@ xbool VulkanSession::PollEvents( void )
             }
             m_pImpl->SessionRunning = TRUE;
             m_State = session_state::Running;
-            x_DebugMsg( "A51XR session event ready->running\n" );
-        }
+                    }
         else if( StateChanged->state == XR_SESSION_STATE_STOPPING &&
                  m_pImpl->SessionRunning )
         {
@@ -1204,20 +1230,17 @@ xbool VulkanSession::PollEvents( void )
             }
             m_pImpl->SessionRunning = FALSE;
             m_State = session_state::Stopping;
-            x_DebugMsg( "A51XR session event stopping\n" );
-        }
+                    }
         else if( StateChanged->state == XR_SESSION_STATE_EXITING )
         {
             m_pImpl->SessionRunning = FALSE;
             m_State = session_state::Exiting;
-            x_DebugMsg( "A51XR session event exiting\n" );
-        }
+                    }
         else if( StateChanged->state == XR_SESSION_STATE_LOSS_PENDING )
         {
             m_pImpl->SessionRunning = FALSE;
             m_State = session_state::LossPending;
-            x_DebugMsg( "A51XR session event loss-pending\n" );
-        }
+                    }
     }
 }
 
@@ -1377,8 +1400,6 @@ void VulkanSession::CancelFrame( void )
     if( !m_pImpl )
         return;
 
-    x_DebugMsg( "A51XR session CancelFrame begun=%d\n",
-                m_pImpl->FrameBegun );
 
     for( u32 i = 0; i < m_pImpl->Swapchains.size(); ++i )
     {
@@ -1420,7 +1441,13 @@ xbool VulkanSession::GetVulkanDeviceInfo( vulkan_device_info& DeviceInfo ) const
     DeviceInfo.Device           = reinterpret_cast<void*>( m_pImpl->Device );
     DeviceInfo.Queue            = reinterpret_cast<void*>( m_pImpl->Queue );
     DeviceInfo.QueueFamilyIndex = m_pImpl->QueueFamilyIndex;
+    DeviceInfo.MultiviewEnabled = m_pImpl->MultiviewEnabled;
     return TRUE;
+}
+
+xbool VulkanSession::SupportsMultiview( void ) const
+{
+    return m_pImpl && m_pImpl->MultiviewEnabled;
 }
 
 xbool VulkanSession::GetRecommendedRenderSize( u32& Width, u32& Height ) const
@@ -1443,19 +1470,14 @@ xbool VulkanSession::PrepareQuadFrame( const vulkan_frame_info& FrameInfo,
                                         f32 HeightMeters,
                                         f32 DistanceMeters )
 {
-    x_DebugMsg( "A51XR session PrepareQuadFrame src=%p cmd=%p size=%ux%u meters=%.3f,%.3f dist=%.3f\n",
-                FrameInfo.SourceImage, FrameInfo.CommandBuffer,
-                FrameInfo.Width, FrameInfo.Height,
-                WidthMeters, HeightMeters, DistanceMeters );
-    if( !m_pImpl || !FrameInfo.CommandBuffer || !FrameInfo.SourceImage )
+        if( !m_pImpl || !FrameInfo.CommandBuffer || !FrameInfo.SourceImage )
         return FALSE;
 
     if( !BeginFrame() )
         return FALSE;
     if( !m_pImpl->FrameBegun )
     {
-        x_DebugMsg( "A51XR session PrepareQuadFrame frame-not-begun\n" );
-        return TRUE;
+                return TRUE;
     }
     if( m_pImpl->Swapchains.empty() )
         return FALSE;
@@ -1480,8 +1502,6 @@ xbool VulkanSession::PrepareQuadFrame( const vulkan_frame_info& FrameInfo,
             return FALSE;
         }
         m_pImpl->AcquiredImages[0] = TRUE;
-        x_DebugMsg( "A51XR session quad acquire index=%u\n",
-                    m_pImpl->AcquiredImageIndices[0] );
 
         XrSwapchainImageWaitInfo WaitInfo{
             XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
@@ -1503,10 +1523,6 @@ xbool VulkanSession::PrepareQuadFrame( const vulkan_frame_info& FrameInfo,
             Swapchain.Images[m_pImpl->AcquiredImageIndices[0]].image,
             FrameInfo.Width, FrameInfo.Height,
             Swapchain.Width, Swapchain.Height );
-        x_DebugMsg( "A51XR session quad copy src=%p dst=%p\n",
-                    FrameInfo.SourceImage,
-                    reinterpret_cast<void*>( Swapchain.Images[
-                        m_pImpl->AcquiredImageIndices[0] ].image ) );
 
         m_pImpl->QuadLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
         m_pImpl->QuadLayer.space = m_pImpl->Space;
@@ -1535,25 +1551,18 @@ xbool VulkanSession::PrepareQuadFrame( const vulkan_frame_info& FrameInfo,
 
 xbool VulkanSession::BeginFrame( void )
 {
-    x_DebugMsg( "A51XR session BeginFrame impl=%p begun=%d running=%d state=%d\n",
-                m_pImpl, m_pImpl ? m_pImpl->FrameBegun : 0,
-                m_pImpl ? m_pImpl->SessionRunning : 0,
-                static_cast<s32>( m_State ) );
-    if( !m_pImpl )
+        if( !m_pImpl )
         return FALSE;
     if( m_pImpl->FrameBegun )
         return TRUE;
 
     if( !PollEvents() )
     {
-        x_DebugMsg( "A51XR session BeginFrame poll-failed error=%s\n",
-                    m_LastError );
-        return FALSE;
+                return FALSE;
     }
     if( !m_pImpl->SessionRunning )
     {
-        x_DebugMsg( "A51XR session BeginFrame skipped session-not-running\n" );
-        return TRUE;
+                return TRUE;
     }
 
     XrFrameWaitInfo FrameWaitInfo{ XR_TYPE_FRAME_WAIT_INFO };
@@ -1562,18 +1571,14 @@ xbool VulkanSession::BeginFrame( void )
                                &m_pImpl->PreparedFrameState ),
                   "xrWaitFrame", m_LastError, sizeof(m_LastError) ) )
     {
-        x_DebugMsg( "A51XR session BeginFrame xrWaitFrame-failed error=%s\n",
-                    m_LastError );
-        return FALSE;
+                return FALSE;
     }
 
     XrFrameBeginInfo FrameBeginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
     if( !CheckXr( xrBeginFrame( m_pImpl->Session, &FrameBeginInfo ),
                   "xrBeginFrame", m_LastError, sizeof(m_LastError) ) )
     {
-        x_DebugMsg( "A51XR session BeginFrame xrBeginFrame-failed error=%s\n",
-                    m_LastError );
-        return FALSE;
+                return FALSE;
     }
     m_pImpl->FrameBegun = TRUE;
 
@@ -1588,16 +1593,10 @@ xbool VulkanSession::BeginFrame( void )
                                  &ViewCount, m_pImpl->Views.data() ),
                   "xrLocateViews", m_LastError, sizeof(m_LastError) ) )
     {
-        x_DebugMsg( "A51XR session BeginFrame xrLocateViews-failed error=%s\n",
-                    m_LastError );
-        CancelFrame();
+                CancelFrame();
         return FALSE;
     }
 
-    x_DebugMsg( "A51XR session BeginFrame begun=1 shouldRender=%d predicted=%lld views=%u swapchains=%u\n",
-                m_pImpl->PreparedFrameState.shouldRender,
-                static_cast<long long>( m_pImpl->PreparedFrameState.predictedDisplayTime ),
-                ViewCount, static_cast<u32>( m_pImpl->Swapchains.size() ) );
 
     if( ViewCount != m_pImpl->Swapchains.size() )
     {
@@ -1613,20 +1612,15 @@ xbool VulkanSession::BeginFrame( void )
         m_pImpl->TrackingOrigin = CentreYawAnchor( m_pImpl->Views[0],
                                                     m_pImpl->Views[1] );
         m_pImpl->TrackingOriginValid = TRUE;
-    }
+            }
 
     for( u32 Eye = 0; Eye < ViewCount; ++Eye )
     {
-        x_DebugMsg( "A51XR session view eye=%u pos=%.5f,%.5f,%.5f fov=%.5f,%.5f,%.5f,%.5f\n",
-                    Eye,
-                    m_pImpl->Views[Eye].pose.position.x,
-                    m_pImpl->Views[Eye].pose.position.y,
-                    m_pImpl->Views[Eye].pose.position.z,
-                    m_pImpl->Views[Eye].fov.angleLeft,
-                    m_pImpl->Views[Eye].fov.angleRight,
-                    m_pImpl->Views[Eye].fov.angleUp,
-                    m_pImpl->Views[Eye].fov.angleDown );
-    }
+        const XrPosef RelativeView = m_pImpl->TrackingOriginValid
+                                   ? RelativePose( m_pImpl->TrackingOrigin,
+                                                   m_pImpl->Views[Eye].pose )
+                                   : m_pImpl->Views[Eye].pose;
+            }
 
     return TRUE;
 }
@@ -1687,20 +1681,26 @@ xbool VulkanSession::GetEyeView( u32 Eye, eye_view& View ) const
 xbool VulkanSession::PrepareStereoFrame( const vulkan_frame_info& LeftFrame,
                                          const vulkan_frame_info& RightFrame )
 {
-    x_DebugMsg( "A51XR session PrepareStereoFrame enter leftCmd=%p leftSrc=%p rightCmd=%p rightSrc=%p size=%ux%u/%ux%u\n",
-                LeftFrame.CommandBuffer, LeftFrame.SourceImage,
-                RightFrame.CommandBuffer, RightFrame.SourceImage,
-                LeftFrame.Width, LeftFrame.Height,
-                RightFrame.Width, RightFrame.Height );
-    if( !m_pImpl || !LeftFrame.CommandBuffer || !LeftFrame.SourceImage ||
+    return PrepareStereoFrameInternal( LeftFrame, RightFrame, FALSE );
+}
+
+xbool VulkanSession::PrepareMultiviewFrame( const vulkan_frame_info& ArrayFrame )
+{
+    return PrepareStereoFrameInternal( ArrayFrame, ArrayFrame, TRUE );
+}
+
+xbool VulkanSession::PrepareStereoFrameInternal( const vulkan_frame_info& LeftFrame,
+                                                  const vulkan_frame_info& RightFrame,
+                                                  xbool bArraySource )
+{
+        if( !m_pImpl || !LeftFrame.CommandBuffer || !LeftFrame.SourceImage ||
         !RightFrame.CommandBuffer || !RightFrame.SourceImage ||
-        (LeftFrame.CommandBuffer != RightFrame.CommandBuffer) )
+        (LeftFrame.CommandBuffer != RightFrame.CommandBuffer) ||
+        (bArraySource && !m_pImpl->MultiviewEnabled) ||
+        (bArraySource && ((LeftFrame.Width != RightFrame.Width) ||
+                          (LeftFrame.Height != RightFrame.Height))) )
     {
-        x_DebugMsg( "A51XR session PrepareStereoFrame invalid-input impl=%p leftCmd=%p leftSrc=%p rightCmd=%p rightSrc=%p sameCmd=%d\n",
-                    m_pImpl, LeftFrame.CommandBuffer, LeftFrame.SourceImage,
-                    RightFrame.CommandBuffer, RightFrame.SourceImage,
-                    LeftFrame.CommandBuffer == RightFrame.CommandBuffer );
-        return FALSE;
+                return FALSE;
     }
 
     static VkImage LastLoggedLeftSource  = VK_NULL_HANDLE;
@@ -1720,20 +1720,14 @@ xbool VulkanSession::PrepareStereoFrame( const vulkan_frame_info& LeftFrame,
 
     if( !BeginFrame() )
     {
-        x_DebugMsg( "A51XR session PrepareStereoFrame BeginFrame failed error=%s\n",
-                    m_LastError );
-        return FALSE;
+                return FALSE;
     }
     if( !m_pImpl->FrameBegun )
     {
-        x_DebugMsg( "A51XR session PrepareStereoFrame frame-not-begun\n" );
-        return TRUE;
+                return TRUE;
     }
 
     const u32 ViewCount = static_cast<u32>( m_pImpl->Views.size() );
-    x_DebugMsg( "A51XR session PrepareStereoFrame begun shouldRender=%d views=%u swapchains=%u\n",
-                m_pImpl->PreparedFrameState.shouldRender,
-                ViewCount, static_cast<u32>( m_pImpl->Swapchains.size() ) );
 
     m_pImpl->ProjectionViews.clear();
     m_pImpl->AcquiredImageIndices.assign( ViewCount, 0 );
@@ -1761,16 +1755,10 @@ xbool VulkanSession::PrepareStereoFrame( const vulkan_frame_info& LeftFrame,
                           "xrAcquireSwapchainImage", m_LastError,
                           sizeof(m_LastError) ) )
             {
-                x_DebugMsg( "A51XR session stereo acquire failed eye=%u error=%s\n",
-                            ViewIndex, m_LastError );
-                CancelFrame();
+                                CancelFrame();
                 return FALSE;
             }
             m_pImpl->AcquiredImages[ViewIndex] = TRUE;
-            x_DebugMsg( "A51XR session stereo acquire eye=%u index=%u src=%p\n",
-                        ViewIndex,
-                        m_pImpl->AcquiredImageIndices[ViewIndex],
-                        EyeFrame.SourceImage );
 
             XrSwapchainImageWaitInfo WaitInfo{
                 XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
@@ -1779,9 +1767,7 @@ xbool VulkanSession::PrepareStereoFrame( const vulkan_frame_info& LeftFrame,
                           "xrWaitSwapchainImage", m_LastError,
                           sizeof(m_LastError) ) )
             {
-                x_DebugMsg( "A51XR session stereo wait failed eye=%u error=%s\n",
-                            ViewIndex, m_LastError );
-                CancelFrame();
+                                CancelFrame();
                 return FALSE;
             }
 
@@ -1789,15 +1775,10 @@ xbool VulkanSession::PrepareStereoFrame( const vulkan_frame_info& LeftFrame,
                 CommandBuffer, SourceImage,
                 Swapchain.Images[m_pImpl->AcquiredImageIndices[ViewIndex]].image,
                 EyeFrame.Width, EyeFrame.Height,
-                Swapchain.Width, Swapchain.Height );
+                Swapchain.Width, Swapchain.Height,
+                bArraySource ? ViewIndex : 0,
+                bArraySource );
 
-            x_DebugMsg( "A51XR session stereo copy eye=%u src=%p dst=%p srcSize=%ux%u dstSize=%ux%u\n",
-                        ViewIndex,
-                        EyeFrame.SourceImage,
-                        reinterpret_cast<void*>( Swapchain.Images[
-                            m_pImpl->AcquiredImageIndices[ViewIndex] ].image ),
-                        EyeFrame.Width, EyeFrame.Height,
-                        Swapchain.Width, Swapchain.Height );
 
             static u32 LoggedStereoHandles = 0;
             if( LoggedStereoHandles < 40 )
@@ -1835,29 +1816,11 @@ xbool VulkanSession::PrepareStereoFrame( const vulkan_frame_info& LeftFrame,
                 static_cast<s32>( Swapchain.Width ),
                 static_cast<s32>( Swapchain.Height ) };
 
-            x_DebugMsg( "A51XR projection eye=%u swapchain=%p image=%u pose=%.5f,%.5f,%.5f fov=%.5f,%.5f,%.5f,%.5f rect=%dx%d array=%u\n",
-                        ViewIndex,
-                        reinterpret_cast<void*>( m_pImpl->ProjectionViews[
-                            ViewIndex ].subImage.swapchain ),
-                        m_pImpl->AcquiredImageIndices[ViewIndex],
-                        m_pImpl->ProjectionViews[ViewIndex].pose.position.x,
-                        m_pImpl->ProjectionViews[ViewIndex].pose.position.y,
-                        m_pImpl->ProjectionViews[ViewIndex].pose.position.z,
-                        m_pImpl->ProjectionViews[ViewIndex].fov.angleLeft,
-                        m_pImpl->ProjectionViews[ViewIndex].fov.angleRight,
-                        m_pImpl->ProjectionViews[ViewIndex].fov.angleUp,
-                        m_pImpl->ProjectionViews[ViewIndex].fov.angleDown,
-                        m_pImpl->ProjectionViews[ViewIndex].subImage.imageRect.extent.width,
-                        m_pImpl->ProjectionViews[ViewIndex].subImage.imageRect.extent.height,
-                        m_pImpl->ProjectionViews[ViewIndex].subImage.imageArrayIndex );
-        }
+                    }
     }
     else
     {
-        x_DebugMsg( "A51XR session PrepareStereoFrame no-copy shouldRender=%d views=%u swapchains=%u\n",
-                    m_pImpl->PreparedFrameState.shouldRender,
-                    ViewCount, static_cast<u32>( m_pImpl->Swapchains.size() ) );
-    }
+            }
 
     m_pImpl->ProjectionLayer = {
         XR_TYPE_COMPOSITION_LAYER_PROJECTION };
@@ -1866,16 +1829,12 @@ xbool VulkanSession::PrepareStereoFrame( const vulkan_frame_info& LeftFrame,
         static_cast<u32>( m_pImpl->ProjectionViews.size() );
     m_pImpl->ProjectionLayer.views = m_pImpl->ProjectionViews.data();
     m_pImpl->UseQuadLayer = FALSE;
-    x_DebugMsg( "A51XR session PrepareStereoFrame done projectionViews=%u\n",
-                static_cast<u32>( m_pImpl->ProjectionViews.size() ) );
-    return TRUE;
+        return TRUE;
 }
 
 xbool VulkanSession::FinishFrame( void )
 {
-    x_DebugMsg( "A51XR session FinishFrame impl=%p begun=%d\n",
-                m_pImpl, m_pImpl ? m_pImpl->FrameBegun : 0 );
-    if( !m_pImpl || !m_pImpl->FrameBegun )
+        if( !m_pImpl || !m_pImpl->FrameBegun )
         return TRUE;
 
     // SDL submits the game command buffer before this function is called.
@@ -1883,9 +1842,7 @@ xbool VulkanSession::FinishFrame( void )
     const VkResult QueueIdleResult = m_pImpl->Queue
                                    ? vkQueueWaitIdle( m_pImpl->Queue )
                                    : VK_ERROR_INITIALIZATION_FAILED;
-    x_DebugMsg( "A51XR session queue-idle before-release result=%d queue=%p\n",
-                QueueIdleResult, reinterpret_cast<void*>( m_pImpl->Queue ) );
-    if( !CheckVk( QueueIdleResult, "vkQueueWaitIdle before swapchain release",
+        if( !CheckVk( QueueIdleResult, "vkQueueWaitIdle before swapchain release",
                   m_LastError, sizeof(m_LastError) ) )
     {
         CancelFrame();
@@ -1904,14 +1861,11 @@ xbool VulkanSession::FinishFrame( void )
                           "xrReleaseSwapchainImage", m_LastError,
                           sizeof(m_LastError) ) )
             {
-                x_DebugMsg( "A51XR session release failed eye=%u error=%s\n",
-                            i, m_LastError );
-                CancelFrame();
+                                CancelFrame();
                 return FALSE;
             }
             m_pImpl->AcquiredImages[i] = FALSE;
-            x_DebugMsg( "A51XR session release eye=%u\n", i );
-        }
+                    }
     }
 
     XrFrameEndInfo FrameEndInfo{ XR_TYPE_FRAME_END_INFO };
@@ -1936,11 +1890,7 @@ xbool VulkanSession::FinishFrame( void )
     const xbool Result = CheckXr( xrEndFrame( m_pImpl->Session, &FrameEndInfo ),
                                   "xrEndFrame", m_LastError,
                                   sizeof(m_LastError) );
-    x_DebugMsg( "A51XR session xrEndFrame result=%d layers=%u projectionViews=%u error=%s\n",
-                Result, FrameEndInfo.layerCount,
-                static_cast<u32>( m_pImpl->ProjectionViews.size() ),
-                Result ? "" : m_LastError );
-    m_pImpl->FrameBegun = FALSE;
+        m_pImpl->FrameBegun = FALSE;
     m_pImpl->ProjectionViews.clear();
     m_pImpl->AcquiredImageIndices.clear();
     m_pImpl->AcquiredImages.clear();

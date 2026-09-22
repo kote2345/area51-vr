@@ -37,6 +37,11 @@ A51_CBUFFER_ATTR(0, 0) cbuffer cbDynamicGeometry A51_CBUFFER_BIND(0, 0)
     uint     LightingIndex;
     uint     ShaderFlags;
     uint2    DynamicPadding;
+#if defined(A51_MULTIVIEW)
+    float4x4 StereoView[2];
+    float4x4 StereoProjection[2];
+    float4   StereoCameraPosition[2];
+#endif
 };
 
 //------------------------------------------------------------------------------
@@ -229,6 +234,25 @@ GEOM_PIXEL_INPUT VSMain( VS_INPUT input )
     output.ViewDepth = viewPosition.z;
     return output;
 }
+
+//==============================================================================
+
+#if defined(A51_MULTIVIEW)
+GEOM_PIXEL_INPUT VSMainMultiview( VS_INPUT input, uint viewIndex : SV_ViewID )
+{
+    GEOM_PIXEL_INPUT output;
+    const float4 viewPosition = mul( StereoView[viewIndex], float4( input.Position, 1.0f ) );
+    output.Position = mul( StereoProjection[viewIndex], viewPosition );
+    output.UV = input.UV;
+    output.Color = input.Color.bgra;
+    output.WorldPos = input.Position;
+    output.Normal = normalize( input.Normal );
+    output.ViewNormal = normalize( mul( (float3x3)StereoView[viewIndex], input.Normal ) );
+    output.ViewVector = input.Position - StereoCameraPosition[viewIndex].xyz;
+    output.ViewDepth = viewPosition.z;
+    return output;
+}
+#endif
 
 //==============================================================================
 

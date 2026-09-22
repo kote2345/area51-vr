@@ -35,6 +35,18 @@ struct DynamicGeometryConstants
     u32     Padding[2];
 };
 
+struct DynamicGeometryMultiviewConstants
+{
+    DynamicGeometryConstants Frame;
+    matrix4                  StereoView[2];
+    matrix4                  StereoProjection[2];
+    vector4                  StereoCameraPosition[2];
+};
+
+static_assert( sizeof( DynamicGeometryConstants ) == 176, "dynamic geometry cbuffer layout must match HLSL" );
+static_assert( sizeof( DynamicGeometryMultiviewConstants ) == 464,
+               "dynamic multiview cbuffer layout must match HLSL" );
+
 //==============================================================================
 //  HELPERS
 //==============================================================================
@@ -75,6 +87,7 @@ xbool EnsureDynamicBuffer( rbuffer& Buffer, u32& Capacity, u32 RequiredCount, u3
 xbool GeomMgr::InitDynamicGeometry( void )
 {
     m_dynamicVertexShader = shader();
+    m_dynamicMultiviewVertexShader = shader();
     m_dynamicPixelShader = shader();
     m_dynamicShaderBindings = ShaderBindingLayout();
     m_dynamicVertexBuffer = rbuffer();
@@ -90,6 +103,7 @@ xbool GeomMgr::InitDynamicGeometry( void )
     m_lDynamicFrameLighting.SetCapacity( 32768 );
 
     shader_LoadFromEcs( m_dynamicVertexShader, "dynamic_geometry_vs.vs.ecs" );
+    shader_LoadFromEcs( m_dynamicMultiviewVertexShader, "dynamic_geometry_multiview_vs.vs.ecs" );
     shader_LoadFromEcs( m_dynamicPixelShader, "dynamic_geometry_ps.ps.ecs" );
     if( !m_dynamicVertexShader || !m_dynamicPixelShader )
     {
@@ -143,6 +157,7 @@ void GeomMgr::KillDynamicGeometry( void )
     m_dynamicIndexCapacity = 0;
     m_dynamicPipelines.Reset();
     shader_Destroy( m_dynamicPixelShader );
+    shader_Destroy( m_dynamicMultiviewVertexShader );
     shader_Destroy( m_dynamicVertexShader );
 }
 
@@ -283,6 +298,9 @@ xbool GeomMgr::UploadDynamicGeometry( void )
 render_pipeline* GeomMgr::GetDynamicPipeline( u32 RenderFlags )
 {
     xbool const Wireframe = ( RenderFlags & ( render::WIREFRAME | render::WIREFRAME2 ) ) != 0;
+    xbool const Multiview = ( rtarget_GetCurrentViewMask() == 0x3u );
+    shader*     pVertexShader = Multiview ? &m_dynamicMultiviewVertexShader : &m_dynamicVertexShader;
+    u64 const   PipelineKey = ( Wireframe ? 1ull : 0ull ) | ( Multiview ? ( 1ull << 32 ) : 0ull );
 
     static shader_vertex_buffer_desc VertexBuffer;
     VertexBuffer.Slot   = 0;
@@ -295,7 +313,7 @@ render_pipeline* GeomMgr::GetDynamicPipeline( u32 RenderFlags )
         shader_vertex_element( 3, 0, SHADER_VERTEX_FORMAT_UBYTE4N_BGRA, offsetof( dynamic_geometry_vertex, Color ) ) };
 
     render_pipeline_desc Desc;
-    Desc.Shader.pVertexShader = &m_dynamicVertexShader;
+    Desc.Shader.pVertexShader = pVertexShader;
     Desc.Shader.pPixelShader = &m_dynamicPixelShader;
     Desc.Shader.pVertexBuffers = &VertexBuffer;
     Desc.Shader.VertexBufferCount = 1;
@@ -313,9 +331,10 @@ render_pipeline* GeomMgr::GetDynamicPipeline( u32 RenderFlags )
     Desc.ColorTargets[1].Blend = rstate_GetBlendDesc( RSTATE_BLEND_PRESET_NONE );
     Desc.ColorTargets[2].Blend = rstate_GetBlendDesc( RSTATE_BLEND_PRESET_NONE );
     Desc.DepthFormat = RTARGET_FORMAT_DEPTH_STENCIL;
+    Desc.ViewMask = Multiview ? 0x3u : 0u;
     Desc.pDebugName = Wireframe ? "GeomDynamicWireGBuffer" : "GeomDynamicGBuffer";
 
-    return m_dynamicPipelines.GetOrCreate( Wireframe ? 1 : 0, Desc );
+    return m_dynamicPipelines.GetOrCreate( PipelineKey, Desc );
 }
 
 //==============================================================================
@@ -337,6 +356,12 @@ xbool GeomMgr::ExecuteDynamicPacket( GeomDrawPacket const& Packet, geom_pass_des
         return FALSE;
     }
     m_activeShaderKind = GEOM_SHADER_DYNAMIC;
+
+    xbool const Multiview = ( rtarget_GetCurrentViewMask() == 0x3u );
+    if( Multiview && ( !m_bMultiviewFrameDataValid || !m_dynamicMultiviewVertexShader ) )
+    {
+        return FALSE;
+    }
 
     DynamicGeometryConstants Constants;
     Constants.View = pView->GetW2V();
@@ -364,8 +389,20 @@ xbool GeomMgr::ExecuteDynamicPacket( GeomDrawPacket const& Packet, geom_pass_des
         !pProjectionAtlas || !pPointSampler || !pFaceShadowSampler )
         return FALSE;
 
-    if( !shader_PushUniformData( SHADER_STAGE_VERTEX, m_dynamicConstantsVertexSlot, &Constants, sizeof( Constants ) ) ||
-        !shader_PushUniformData( SHADER_STAGE_PIXEL, m_dynamicConstantsPixelSlot, &Constants, sizeof( Constants ) ) ||
+    DynamicGeometryMultiviewConstants MultiviewConstants;
+    MultiviewConstants.Frame = Constants;
+    for( u32 Eye = 0; Eye < 2; ++Eye )
+    {
+        MultiviewConstants.StereoView[Eye] = m_stereoView[Eye];
+        MultiviewConstants.StereoProjection[Eye] = m_stereoProjection[Eye];
+        MultiviewConstants.StereoCameraPosition[Eye] = m_stereoCameraPosition[Eye];
+    }
+    void const* pVertexConstants = Multiview ? (void const*)&MultiviewConstants : (void const*)&Constants;
+    u32 const   VertexConstantsSize = Multiview ? sizeof( MultiviewConstants ) : sizeof( Constants );
+    if( !shader_PushUniformData( SHADER_STAGE_VERTEX, m_dynamicConstantsVertexSlot,
+                                 pVertexConstants, VertexConstantsSize ) ||
+        !shader_PushUniformData( SHADER_STAGE_PIXEL, m_dynamicConstantsPixelSlot,
+                                 &Constants, sizeof( Constants ) ) ||
         !UpdateProjTextures() ||
         !shader_BindSampler( shader_sampler_binding( SHADER_STAGE_PIXEL, m_dynamicDiffuseSlot,
                                                      Packet.Resources.pDiffuse, pSampler ) ) ||

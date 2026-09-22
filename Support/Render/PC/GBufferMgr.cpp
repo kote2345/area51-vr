@@ -101,7 +101,8 @@ GBufferMgr g_GBufferMgr;
 GBufferMgr::GBufferMgr( void )
     : m_isInitialized( FALSE ), m_isGBufferValid( FALSE ), m_areGBufferTargetsActive( FALSE ),
       m_isSceneColorRenderedThisFrame( FALSE ), m_clearGBufferOnBind( FALSE ), m_gBufferWidth( 0 ),
-      m_gBufferHeight( 0 ), m_pOverrideColor( NULL ), m_pOverrideDepth( NULL )
+      m_gBufferHeight( 0 ), m_gBufferLayerCount( 1 ), m_multiviewEnabled( FALSE ),
+      m_pOverrideColor( NULL ), m_pOverrideDepth( NULL )
 {
 }
 
@@ -145,6 +146,18 @@ void GBufferMgr::BeginFrame( void )
 }
 
 //==============================================================================
+
+void GBufferMgr::SetMultiviewEnabled( xbool enabled )
+{
+    if( m_multiviewEnabled == enabled )
+        return;
+
+    m_multiviewEnabled = enabled;
+    m_gBufferLayerCount = enabled ? 2 : 1;
+    DestroyGBuffer();
+}
+
+//==============================================================================
 //  G-BUFFER LIFETIME
 //==============================================================================
 
@@ -153,6 +166,7 @@ xbool GBufferMgr::CreateTarget( rtarget& target, rtarget_format format, f32 cons
     rtarget_desc desc;
     desc.Width          = m_gBufferWidth;
     desc.Height         = m_gBufferHeight;
+    desc.LayerCount     = m_gBufferLayerCount;
     desc.Format         = format;
     desc.SampleCount    = 1;
     desc.SampleQuality  = 0;
@@ -183,7 +197,8 @@ xbool GBufferMgr::InitGBuffer( u32 width, u32 height )
         return FALSE;
     }
 
-    if ( m_isGBufferValid && ( m_gBufferWidth == width ) && ( m_gBufferHeight == height ) )
+    if ( m_isGBufferValid && ( m_gBufferWidth == width ) && ( m_gBufferHeight == height ) &&
+         ( m_gBufferLayerCount == ( m_multiviewEnabled ? 2u : 1u ) ) )
     {
         return TRUE;
     }
@@ -304,7 +319,12 @@ xbool GBufferMgr::SetGBufferTargets( void )
 
     rtarget_EndPass();
     m_areGBufferTargetsActive = FALSE;
-    if ( !rtarget_BeginPass( boundTargets, BIND_SLOT_COUNT, &depth ) )
+    rtarget_pass_desc pass;
+    pass.pColors = boundTargets;
+    pass.ColorCount = BIND_SLOT_COUNT;
+    pass.pDepthStencil = &depth;
+    pass.ViewMask = m_multiviewEnabled ? 0x3u : 0u;
+    if ( !rtarget_BeginPass( pass ) )
     {
         return FALSE;
     }
@@ -358,7 +378,12 @@ void GBufferMgr::SetFinalColorTarget( void )
 
     rtarget_EndPass();
     m_areGBufferTargetsActive = FALSE;
-    rtarget_BeginPass( &color, 1, &depth );
+    rtarget_pass_desc pass;
+    pass.pColors = &color;
+    pass.ColorCount = 1;
+    pass.pDepthStencil = &depth;
+    pass.ViewMask = m_multiviewEnabled ? 0x3u : 0u;
+    rtarget_BeginPass( pass );
     m_areGBufferTargetsActive = FALSE;
 }
 
@@ -366,6 +391,9 @@ void GBufferMgr::SetFinalColorTarget( void )
 
 void GBufferMgr::PresentFinalColor( void )
 {
+    if( m_multiviewEnabled )
+        return;
+
     if ( !m_isGBufferValid || !m_isSceneColorRenderedThisFrame || !rtarget_HasShaderResource( m_sceneColorTarget ) )
     {
         return;

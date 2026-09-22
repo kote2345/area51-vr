@@ -51,6 +51,11 @@ xbool sdleng_HasVulkanExternalDevice( void )
     return s_bExternalVulkanDevice;
 }
 
+xbool sdleng_VulkanMultiviewEnabled( void )
+{
+    return s_bExternalVulkanDevice && s_ExternalVulkanDevice.MultiviewEnabled;
+}
+
 xbool sdleng_GetVulkanDeviceInfo( sdleng_vulkan_device_info& Info )
 {
     SDL_GPUVulkanDeviceInfo SDLInfo;
@@ -67,6 +72,7 @@ xbool sdleng_GetVulkanDeviceInfo( sdleng_vulkan_device_info& Info )
     Info.QueueFamilyIndex  = SDLInfo.queue_family_index;
     Info.RenderWidth       = 0;
     Info.RenderHeight      = 0;
+    Info.MultiviewEnabled  = FALSE;
     return TRUE;
 }
 

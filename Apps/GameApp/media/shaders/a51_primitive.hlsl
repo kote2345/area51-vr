@@ -22,6 +22,9 @@ A51_CBUFFER_ATTR(0, 0) cbuffer cbPrimitiveDraw A51_CBUFFER_BIND(0, 0)
     uint   OutputMode;
     float  DistortionScale;
     float2 PrimitiveDrawPadding;
+#if defined(A51_MULTIVIEW)
+    float4x4 StereoLocalToClip[2];
+#endif
 };
 
 //------------------------------------------------------------------------------
@@ -65,6 +68,17 @@ PS_INPUT VSMain( VS_INPUT input )
 
     return output;
 }
+
+#if defined(A51_MULTIVIEW)
+PS_INPUT VSMainMultiview( VS_INPUT input, uint viewIndex : SV_ViewID )
+{
+    PS_INPUT output;
+    output.Position = mul( StereoLocalToClip[viewIndex], float4( input.Position, 1.0f ) );
+    output.Color    = input.Color.bgra;
+    output.UV       = input.UV;
+    return output;
+}
+#endif
 
 //==============================================================================
 

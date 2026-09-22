@@ -278,6 +278,7 @@ void GeomMgr::Init( void )
 
     // Initialize member variables
     m_activeShaderKind = GEOM_SHADER_NONE;
+    m_bMultiviewFrameDataValid = FALSE;
     m_activeSamplerPreset = RSTATE_SAMPLER_PRESET_ANISOTROPIC_WRAP;
     m_isDistortionStateActive = FALSE;
     m_pDistortionSceneResource = NULL;
@@ -655,6 +656,84 @@ xbool GeomMgr::PushFrameConstants( geom_shader_kind kind, GeomFrameConstants con
     }
 
     return shader_PushUniformData( SHADER_STAGE_PIXEL, pBindings->FrameConstantsPixel, &frame, sizeof( frame ) );
+}
+
+//==============================================================================
+
+xbool GeomMgr::PushMultiviewFrameConstants( geom_shader_kind kind, GeomFrameConstants const& frame,
+                                            matrix4 const stereoView[2],
+                                            matrix4 const stereoProjection[2],
+                                            vector4 const stereoCameraPosition[2] ) const
+{
+    ShaderBindingLayout const* pBindings = GetShaderBindings( kind );
+    if ( !pBindings || !stereoView || !stereoProjection || !stereoCameraPosition )
+    {
+        return FALSE;
+    }
+
+    GeomMultiviewFrameConstants multiviewFrame;
+    multiviewFrame.Frame = frame;
+    for ( u32 eye = 0; eye < 2; ++eye )
+    {
+        multiviewFrame.StereoView[eye] = stereoView[eye];
+        multiviewFrame.StereoProjection[eye] = stereoProjection[eye];
+        multiviewFrame.StereoCameraPosition[eye] = stereoCameraPosition[eye];
+    }
+
+    if ( !shader_PushUniformData( SHADER_STAGE_VERTEX, pBindings->FrameConstantsVertex,
+                                  &multiviewFrame, sizeof( multiviewFrame ) ) )
+    {
+        return FALSE;
+    }
+
+    return shader_PushUniformData( SHADER_STAGE_PIXEL, pBindings->FrameConstantsPixel,
+                                   &frame, sizeof( frame ) );
+}
+
+//==============================================================================
+
+void GeomMgr::SetMultiviewFrameData( matrix4 const stereoView[2],
+                                     matrix4 const stereoProjection[2],
+                                     vector4 const stereoCameraPosition[2] )
+{
+    if( !stereoView || !stereoProjection || !stereoCameraPosition )
+    {
+        ClearMultiviewFrameData();
+        return;
+    }
+
+    for( u32 eye = 0; eye < 2; ++eye )
+    {
+        m_stereoView[eye] = stereoView[eye];
+        m_stereoProjection[eye] = stereoProjection[eye];
+        m_stereoCameraPosition[eye] = stereoCameraPosition[eye];
+    }
+    m_bMultiviewFrameDataValid = TRUE;
+}
+
+void GeomMgr::ClearMultiviewFrameData( void )
+{
+    m_bMultiviewFrameDataValid = FALSE;
+}
+
+xbool GeomMgr::GetMultiviewFrameData( matrix4 stereoView[2], matrix4 stereoProjection[2],
+                                      vector4 stereoCameraPosition[2] ) const
+{
+    if( !m_bMultiviewFrameDataValid || !stereoView || !stereoProjection || !stereoCameraPosition )
+        return FALSE;
+
+    for( u32 Eye = 0; Eye < 2; ++Eye )
+    {
+        stereoView[Eye] = m_stereoView[Eye];
+        stereoProjection[Eye] = m_stereoProjection[Eye];
+        stereoCameraPosition[Eye] = m_stereoCameraPosition[Eye];
+    }
+    return TRUE;
+}
+
+xbool GeomMgr::SupportsMultiview( void ) const
+{
+    return m_rigidMultiviewVertexShader && m_skinMultiviewVertexShader && m_dynamicMultiviewVertexShader;
 }
 
 //==============================================================================
@@ -2454,8 +2533,12 @@ render_pipeline* GeomMgr::GetRigidPipeline( RenderStateSelection const& state, x
         return NULL;
     }
 
+    const xbool bMultiview = (rtarget_GetCurrentViewMask() == 0x3u);
+    if( bMultiview && !m_rigidMultiviewVertexShader )
+        return NULL;
+
     render_pipeline_desc desc;
-    desc.Shader.pVertexShader = &m_rigidVertexShader;
+    desc.Shader.pVertexShader = bMultiview ? &m_rigidMultiviewVertexShader : &m_rigidVertexShader;
     desc.Shader.pPixelShader = state.SceneOnly ? &m_rigidScenePixelShader : &m_rigidPixelShader;
     desc.Shader.pVertexBuffers = rigidVertexBuffers;
     desc.Shader.VertexBufferCount = ARRAYSIZE( rigidVertexBuffers );
@@ -2473,9 +2556,11 @@ render_pipeline* GeomMgr::GetRigidPipeline( RenderStateSelection const& state, x
     desc.ColorTargets[2].Blend = rstate_GetBlendDesc( state.Blend );
     desc.ColorTargets[3].Blend = rstate_GetBlendDesc( state.Blend );
     desc.DepthFormat = RTARGET_FORMAT_DEPTH_STENCIL;
+    desc.ViewMask = bMultiview ? 0x3u : 0u;
     desc.pDebugName = state.SceneOnly ? "GeomRigidScene" : "GeomRigidGBuffer";
 
-    return isPrewarm ? m_rigidPipelines.Prewarm( index, desc ) : m_rigidPipelines.GetOrCreate( index, desc );
+    const u64 pipelineKey = static_cast<u64>( index ) | (bMultiview ? (1ull << 32) : 0ull);
+    return isPrewarm ? m_rigidPipelines.Prewarm( pipelineKey, desc ) : m_rigidPipelines.GetOrCreate( pipelineKey, desc );
 }
 
 //==============================================================================
@@ -2522,8 +2607,12 @@ render_pipeline* GeomMgr::GetSkinPipeline( RenderStateSelection const& state, xb
         return NULL;
     }
 
+    const xbool bMultiview = (rtarget_GetCurrentViewMask() == 0x3u);
+    if( bMultiview && !m_skinMultiviewVertexShader )
+        return NULL;
+
     render_pipeline_desc desc;
-    desc.Shader.pVertexShader = &m_skinVertexShader;
+    desc.Shader.pVertexShader = bMultiview ? &m_skinMultiviewVertexShader : &m_skinVertexShader;
     desc.Shader.pPixelShader = state.SceneOnly ? &m_skinScenePixelShader : &m_skinPixelShader;
     desc.Shader.pVertexBuffers = skinVertexBuffers;
     desc.Shader.VertexBufferCount = ARRAYSIZE( skinVertexBuffers );
@@ -2541,9 +2630,11 @@ render_pipeline* GeomMgr::GetSkinPipeline( RenderStateSelection const& state, xb
     desc.ColorTargets[2].Blend = rstate_GetBlendDesc( state.Blend );
     desc.ColorTargets[3].Blend = rstate_GetBlendDesc( state.Blend );
     desc.DepthFormat = RTARGET_FORMAT_DEPTH_STENCIL;
+    desc.ViewMask = bMultiview ? 0x3u : 0u;
     desc.pDebugName = state.SceneOnly ? "GeomSkinScene" : "GeomSkinGBuffer";
 
-    return isPrewarm ? m_skinPipelines.Prewarm( index, desc ) : m_skinPipelines.GetOrCreate( index, desc );
+    const u64 pipelineKey = static_cast<u64>( index ) | (bMultiview ? (1ull << 32) : 0ull);
+    return isPrewarm ? m_skinPipelines.Prewarm( pipelineKey, desc ) : m_skinPipelines.GetOrCreate( pipelineKey, desc );
 }
 
 //==============================================================================

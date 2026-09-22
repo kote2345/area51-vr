@@ -37,6 +37,10 @@ A51_CBUFFER_ATTR(0, 0) cbuffer cbDecalDraw A51_CBUFFER_BIND(0, 0)
     uint     DecalFlags;
     uint     DecalBlendMode;
     uint     DecalOutputMode;
+#if defined(A51_MULTIVIEW)
+    float4x4 StereoWorldToClip[2];
+    float4   StereoCameraPosition[2];
+#endif
 };
 
 //------------------------------------------------------------------------------
@@ -213,6 +217,20 @@ GEOM_PIXEL_INPUT VSMain( VS_INPUT input )
     output.ViewVector = input.Position - CameraPosition.xyz;
     return output;
 }
+
+#if defined(A51_MULTIVIEW)
+GEOM_PIXEL_INPUT VSMainMultiview( VS_INPUT input, uint viewIndex : SV_ViewID )
+{
+    GEOM_PIXEL_INPUT output;
+    output.Position = mul( StereoWorldToClip[viewIndex], float4( input.Position, 1.0f ) );
+    output.Color = input.Color.bgra;
+    output.UV = input.UV;
+    output.WorldPos = input.Position;
+    output.Normal = GeometricNormal.xyz;
+    output.ViewVector = input.Position - StereoCameraPosition[viewIndex].xyz;
+    return output;
+}
+#endif
 
 //==============================================================================
 

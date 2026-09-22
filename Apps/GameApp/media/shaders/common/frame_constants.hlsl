@@ -36,6 +36,14 @@ A51_CBUFFER_ATTR(0, 0) cbuffer cbFrameConstants A51_CBUFFER_BIND(0, 0)
     float4   FogColor;               // rgb = fog color
     float4   FogCoeff;               // polynomial fog coefficients
     float4   FogParams;              // x = near, y = far, z = fog start, w = enabled
+
+#if defined(A51_MULTIVIEW)
+    // Opt-in Vulkan multiview transforms. The legacy cbuffer layout remains
+    // unchanged when this compile define is absent.
+    float4x4 StereoView[2];
+    float4x4 StereoProjection[2];
+    float4   StereoCameraPosition[2];
+#endif
 };
 
 //==============================================================================

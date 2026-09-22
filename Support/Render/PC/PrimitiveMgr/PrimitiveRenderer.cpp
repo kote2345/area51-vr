@@ -329,6 +329,7 @@ xbool PrimitiveRenderer::BuildBatchDesc( PrimitiveMgr::BatchDesc& out, render::p
     out.Pipeline.Sampler          = sampler;
     out.Pipeline.pDebugName       = "PrimitivePipeline";
     out.pTexture                  = pTexture;
+    out.LocalToWorld              = localToWorld;
     out.Output                    = desc.Output;
     out.Layer                     = desc.Layer;
     out.Constants.Output          = static_cast<u32>( desc.Output );

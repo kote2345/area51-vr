@@ -252,7 +252,12 @@ xbool ForwardRenderMgr::BeginColorDepthPass( rtarget const& colorTarget, rtarget
     }
 
     rtarget_EndPass();
-    if ( !rtarget_BeginPass( &color, 1, pDepth ) )
+    rtarget_pass_desc pass;
+    pass.pColors = &color;
+    pass.ColorCount = 1;
+    pass.pDepthStencil = pDepth;
+    pass.ViewMask = ( colorTarget.Desc.LayerCount >= 2 ) ? 0x3u : 0u;
+    if ( !rtarget_BeginPass( pass ) )
     {
         x_DebugMsg( "ForwardRenderMgr: failed to begin color/depth pass color=%s depth=%s\n",
                     colorTarget.Desc.pDebugName ? colorTarget.Desc.pDebugName : "<unnamed>",
@@ -470,13 +475,15 @@ xbool ForwardRenderMgr::EnsureDistortionScene( rtarget const& source )
     }
 
     if ( !rtarget_HasShaderResource( m_distortionScene ) || ( m_distortionWidth != source.Desc.Width ) ||
-         ( m_distortionHeight != source.Desc.Height ) || ( m_distortionFormat != source.Desc.Format ) )
+         ( m_distortionHeight != source.Desc.Height ) || ( m_distortionFormat != source.Desc.Format ) ||
+         ( m_distortionScene.Desc.LayerCount != source.Desc.LayerCount ) )
     {
         ReleaseDistortionScene();
 
         rtarget_desc desc;
         desc.Width          = source.Desc.Width;
         desc.Height         = source.Desc.Height;
+        desc.LayerCount     = source.Desc.LayerCount;
         desc.Format         = source.Desc.Format;
         desc.SampleCount    = 1;
         desc.SampleQuality  = 0;
@@ -516,7 +523,23 @@ xbool ForwardRenderMgr::CaptureDistortionScene( frame_render_targets const& targ
     }
 
     rtarget_EndPass();
-    return EnsureDistortionScene( *targets.pSceneColor ) && rtarget_Copy( m_distortionScene, *targets.pSceneColor );
+    if ( !EnsureDistortionScene( *targets.pSceneColor ) )
+        return FALSE;
+
+    for( u32 Layer = 0; Layer < targets.pSceneColor->Desc.LayerCount; ++Layer )
+    {
+        rtarget_copy_desc copy;
+        copy.pDestination = &m_distortionScene;
+        copy.pSource = targets.pSceneColor;
+        copy.SrcLayer = Layer;
+        copy.DstLayer = Layer;
+        copy.Width = targets.pSceneColor->Desc.Width;
+        copy.Height = targets.pSceneColor->Desc.Height;
+        copy.Depth = 1;
+        if( !rtarget_Copy( copy ) )
+            return FALSE;
+    }
+    return TRUE;
 }
 
 //=============================================================================

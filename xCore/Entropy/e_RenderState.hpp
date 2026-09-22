@@ -377,6 +377,7 @@ struct render_pipeline_desc
     rtarget_format           DepthFormat;
     u32                      SampleCount;
     u32                      SampleMask;
+    u32                      ViewMask;
     xbool                    bAlphaToCoverage;
     const char*              pDebugName;
 
@@ -388,6 +389,7 @@ struct render_pipeline_desc
         DepthFormat     ( RTARGET_FORMAT_COUNT ),
         SampleCount     ( 1 ),
         SampleMask      ( 0xffffffff ),
+        ViewMask        ( 0 ),
         bAlphaToCoverage( FALSE ),
         pDebugName      ( NULL )
     {

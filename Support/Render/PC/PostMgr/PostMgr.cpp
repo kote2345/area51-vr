@@ -552,6 +552,9 @@ void PostMgr::PostStage_BeforePresentThunk( void )
         return;
     }
 
+    if( g_GBufferMgr.IsMultiviewEnabled() )
+        return;
+
     if ( !g_GBufferMgr.WasSceneRenderedThisFrame() )
     {
         g_PostMgr.InvalidateTemporalHistory();
@@ -570,6 +573,9 @@ void PostMgr::PostStage_AfterUIThunk( void )
     {
         return;
     }
+
+    if( g_GBufferMgr.IsMultiviewEnabled() )
+        return;
 
     if ( !g_GBufferMgr.WasSceneRenderedThisFrame() )
     {

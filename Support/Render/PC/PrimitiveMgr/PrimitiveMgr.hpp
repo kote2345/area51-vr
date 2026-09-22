@@ -97,6 +97,7 @@ public:
     {
         PipelineDesc                   Pipeline;
         DrawConstants                  Constants;
+        matrix4                        LocalToWorld;
         shader_resource const*         pTexture;
         render::primitive_output_mode  Output;
         render::primitive_render_layer Layer;
@@ -106,6 +107,7 @@ public:
             : Pipeline(), Constants(), pTexture( NULL ), Output( render::PRIMITIVE_OUTPUT_COLOR ),
               Layer( render::PRIMITIVE_LAYER_TRANSPARENT ), SortDepth( 0.0f )
         {
+            LocalToWorld.Identity();
         }
     };
 
@@ -133,6 +135,7 @@ public:
     xbool                          SubmitBatch            ( Vertex const* pVertices, s32 nVertices, u16 const* pIndices, s32 nIndices );
     xbool                          EndBatch               ( void );
     xbool                          HasQueuedDraws         ( void ) const;
+    xbool                          SupportsMultiview      ( void ) const { return m_multiviewVertexShader; }
     xbool                          UploadQueuedDraws      ( void );
     s32                            GetQueuedDrawCount     ( void ) const;
     render::primitive_render_layer GetQueuedDrawLayer     ( s32 drawIndex ) const;
@@ -166,6 +169,7 @@ protected:
 protected:
     RuntimeVertexMgr       m_vertexMgr;
     shader                 m_vertexShader;
+    shader                 m_multiviewVertexShader;
     shader                 m_pixelShader;
     RenderPipelineCache    m_pipelines;
     rstate_sampler         m_samplers[RSTATE_SAMPLER_PRESET_COUNT];

@@ -29,6 +29,7 @@ xbool GeomMgr::InitSkinShaders( void )
 
     // Initialize member variables
     m_skinVertexShader = shader();
+    m_skinMultiviewVertexShader = shader();
     m_skinPixelShader = shader();
     m_skinScenePixelShader = shader();
     m_skinInstanceDataBuffer = rbuffer();
@@ -44,6 +45,7 @@ xbool GeomMgr::InitSkinShaders( void )
     ResetSkinBatch();
 
     shader_LoadFromEcs( m_skinVertexShader, "skin_simple_vs.vs.ecs" );
+    shader_LoadFromEcs( m_skinMultiviewVertexShader, "skin_multiview_vs.vs.ecs" );
     shader_LoadFromEcs( m_skinPixelShader, "skin_simple_ps.ps.ecs" );
     shader_LoadFromEcs( m_skinScenePixelShader, "skin_scene_ps.ps.ecs" );
 
@@ -66,6 +68,7 @@ void GeomMgr::KillSkinShaders( void )
 
     DestroySkinPipelines();
     shader_Destroy( m_skinVertexShader );
+    shader_Destroy( m_skinMultiviewVertexShader );
     shader_Destroy( m_skinPixelShader );
     shader_Destroy( m_skinScenePixelShader );
 
@@ -276,7 +279,16 @@ xbool GeomMgr::UpdateSkinConstants( material const* pMaterial, u8 uOffset, u8 vO
     GeomFrameConstants const frameData =
         BuildFrameConstants( *pView, pMaterial, uOffset, vOffset, FALSE, overrideMat, pass );
 
-    if ( !PushFrameConstants( GEOM_SHADER_SKIN, frameData ) )
+    const xbool bMultiview = (rtarget_GetCurrentViewMask() == 0x3u);
+    if ( bMultiview &&
+         (!m_bMultiviewFrameDataValid ||
+          !PushMultiviewFrameConstants( GEOM_SHADER_SKIN, frameData,
+                                        m_stereoView, m_stereoProjection,
+                                        m_stereoCameraPosition )) )
+    {
+        return FALSE;
+    }
+    if ( !bMultiview && !PushFrameConstants( GEOM_SHADER_SKIN, frameData ) )
     {
         return FALSE;
     }
