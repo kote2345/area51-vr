@@ -15,7 +15,8 @@
 
 float ComputePointShadowFaceAlignment( uint sourceIndex, float3 lightDir )
 {
-    const float3 faceDir = normalize( GetFaceShadowLightDirFalloff( sourceIndex ).xyz );
+    // Shadow face directions are normalized in ShadowMapMgr before upload.
+    const float3 faceDir = GetFaceShadowLightDirFalloff( sourceIndex ).xyz;
     return dot( faceDir, lightDir );
 }
 

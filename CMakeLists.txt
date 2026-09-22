@@ -20,9 +20,28 @@ endif()
 
 project( Area51 LANGUAGES C CXX )
 
+# Android's Gradle variant normally forces CMAKE_BUILD_TYPE to Debug or
+# RelWithDebInfo. Allow the Quest profiling build to select the engine's
+# optimized development configuration while retaining X_PROFILE and logs.
+if( ANDROID AND DEFINED A51_ANDROID_CONFIGURATION AND
+    NOT A51_ANDROID_CONFIGURATION STREQUAL "" )
+    set( CMAKE_BUILD_TYPE "${A51_ANDROID_CONFIGURATION}" CACHE STRING
+         "Area 51 Android configuration override" FORCE )
+endif()
+
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     add_compile_options(
         $<$<CONFIG:Release>:-g>
+    )
+endif()
+
+# The Android toolchain does not define compiler flags for the engine's
+# custom OptDebug configuration. Keep this profiling build optimized while
+# retaining symbols and the X_PROFILE instrumentation.
+if( NOT MSVC )
+    add_compile_options(
+        $<$<CONFIG:OptDebug>:-O2>
+        $<$<CONFIG:OptDebug>:-g>
     )
 endif()
 
@@ -72,6 +91,8 @@ option( A51_ENABLE_QT "Enable Qt integration for XBMPViewer when Qt6 is availabl
 option( A51_EXPORT_COMPILE_COMMANDS "Generate compile_commands.json for tooling" ON )
 option( A51_BUILD_DXC "Build the bundled DXC host compiler from source" ON )
 option( A51_ENABLE_OPENXR "Enable the common OpenXR runtime layer" OFF )
+option( A51_GBUFFER_LOW_BW "Use RGBA8 auxiliary G-buffer targets to reduce mobile GPU bandwidth" OFF )
+option( A51_DIRECT_RENDER "Use the direct color/depth render path without auxiliary G-buffer targets" OFF )
 set( A51_OPENXR_HEADERS_DIR "" CACHE PATH
      "Directory containing the OpenXR headers (openxr/openxr.h)" )
 set( A51_OPENXR_LOADER_LIBRARY "" CACHE FILEPATH
@@ -95,6 +116,16 @@ target_compile_features( a51_build_options INTERFACE cxx_std_17 )
 if( A51_ENABLE_OPENXR )
     target_compile_definitions( a51_build_options INTERFACE
         A51_ENABLE_OPENXR=1
+    )
+endif()
+if( A51_GBUFFER_LOW_BW )
+    target_compile_definitions( a51_build_options INTERFACE
+        A51_GBUFFER_LOW_BW=1
+    )
+endif()
+if( A51_DIRECT_RENDER )
+    target_compile_definitions( a51_build_options INTERFACE
+        A51_DIRECT_RENDER=1
     )
 endif()
 target_compile_definitions( a51_build_options INTERFACE

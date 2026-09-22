@@ -89,6 +89,7 @@ xbool GeomMgr::InitDynamicGeometry( void )
     m_dynamicVertexShader = shader();
     m_dynamicMultiviewVertexShader = shader();
     m_dynamicPixelShader = shader();
+    m_dynamicScenePixelShader = shader();
     m_dynamicShaderBindings = ShaderBindingLayout();
     m_dynamicVertexBuffer = rbuffer();
     m_dynamicIndexBuffer = rbuffer();
@@ -105,7 +106,20 @@ xbool GeomMgr::InitDynamicGeometry( void )
     shader_LoadFromEcs( m_dynamicVertexShader, "dynamic_geometry_vs.vs.ecs" );
     shader_LoadFromEcs( m_dynamicMultiviewVertexShader, "dynamic_geometry_multiview_vs.vs.ecs" );
     shader_LoadFromEcs( m_dynamicPixelShader, "dynamic_geometry_ps.ps.ecs" );
-    if( !m_dynamicVertexShader || !m_dynamicPixelShader )
+#if defined(A51_DIRECT_RENDER)
+    shader_LoadFromEcs( m_dynamicScenePixelShader, "dynamic_geometry_scene_ps.ps.ecs" );
+#endif
+    x_DebugMsg( "GeomMgr: dynamic shader load vertex=%d multiview=%d pixel=%d scene=%d viewMask=%u\n",
+                !!m_dynamicVertexShader,
+                !!m_dynamicMultiviewVertexShader,
+                !!m_dynamicPixelShader,
+                !!m_dynamicScenePixelShader,
+                rtarget_GetCurrentViewMask() );
+    if( !m_dynamicVertexShader || !m_dynamicPixelShader
+#if defined(A51_DIRECT_RENDER)
+        || !m_dynamicScenePixelShader
+#endif
+    )
     {
         x_DebugMsg( "GeomMgr: Failed to initialize dynamic geometry shaders\n" );
         KillDynamicGeometry();
@@ -135,11 +149,12 @@ xbool GeomMgr::InitDynamicGeometry( void )
         return FALSE;
     }
 
-    if( !GetDynamicPipeline( 0 ) || !GetDynamicPipeline( render::WIREFRAME ) )
-    {
-        KillDynamicGeometry();
-        return FALSE;
-    }
+    // Dynamic geometry pipelines are created lazily when a packet is drawn.
+    // Creating them here can happen before the active render target is known,
+    // selecting the multiview variant too early and making all geometry fail
+    // initialization. Keep shader loading independent from that transient state.
+    x_DebugMsg( "GeomMgr: dynamic shaders initialized; pipelines deferred (viewMask=%u)\n",
+                rtarget_GetCurrentViewMask() );
 
     return TRUE;
 }
@@ -157,6 +172,7 @@ void GeomMgr::KillDynamicGeometry( void )
     m_dynamicIndexCapacity = 0;
     m_dynamicPipelines.Reset();
     shader_Destroy( m_dynamicPixelShader );
+    shader_Destroy( m_dynamicScenePixelShader );
     shader_Destroy( m_dynamicMultiviewVertexShader );
     shader_Destroy( m_dynamicVertexShader );
 }
@@ -295,12 +311,13 @@ xbool GeomMgr::UploadDynamicGeometry( void )
 //  PIPELINE
 //==============================================================================
 
-render_pipeline* GeomMgr::GetDynamicPipeline( u32 RenderFlags )
+render_pipeline* GeomMgr::GetDynamicPipeline( u32 RenderFlags, xbool SceneOnly )
 {
     xbool const Wireframe = ( RenderFlags & ( render::WIREFRAME | render::WIREFRAME2 ) ) != 0;
     xbool const Multiview = ( rtarget_GetCurrentViewMask() == 0x3u );
     shader*     pVertexShader = Multiview ? &m_dynamicMultiviewVertexShader : &m_dynamicVertexShader;
-    u64 const   PipelineKey = ( Wireframe ? 1ull : 0ull ) | ( Multiview ? ( 1ull << 32 ) : 0ull );
+    u64 const   PipelineKey = ( Wireframe ? 1ull : 0ull ) | ( SceneOnly ? ( 1ull << 1 ) : 0ull ) |
+                               ( Multiview ? ( 1ull << 32 ) : 0ull );
 
     static shader_vertex_buffer_desc VertexBuffer;
     VertexBuffer.Slot   = 0;
@@ -314,7 +331,7 @@ render_pipeline* GeomMgr::GetDynamicPipeline( u32 RenderFlags )
 
     render_pipeline_desc Desc;
     Desc.Shader.pVertexShader = pVertexShader;
-    Desc.Shader.pPixelShader = &m_dynamicPixelShader;
+    Desc.Shader.pPixelShader = SceneOnly ? &m_dynamicScenePixelShader : &m_dynamicPixelShader;
     Desc.Shader.pVertexBuffers = &VertexBuffer;
     Desc.Shader.VertexBufferCount = 1;
     Desc.Shader.pInputElements = Layout;
@@ -323,16 +340,21 @@ render_pipeline* GeomMgr::GetDynamicPipeline( u32 RenderFlags )
     Desc.Depth = rstate_GetDepthDesc( RSTATE_DEPTH_PRESET_NORMAL );
     Desc.Raster = rstate_GetRasterDesc( Wireframe ? RSTATE_RASTER_PRESET_WIRE_NO_CULL
                                                   : RSTATE_RASTER_PRESET_SOLID_NO_CULL );
-    Desc.ColorCount = 3;
+    Desc.ColorCount = SceneOnly ? 1 : 3;
     Desc.ColorTargets[0].Format = RTARGET_FORMAT_RGBA8;
+#if defined(A51_GBUFFER_LOW_BW)
+    Desc.ColorTargets[1].Format = RTARGET_FORMAT_RGBA8;
+    Desc.ColorTargets[2].Format = RTARGET_FORMAT_RGBA8;
+#else
     Desc.ColorTargets[1].Format = RTARGET_FORMAT_RGBA16F;
     Desc.ColorTargets[2].Format = RTARGET_FORMAT_RGBA16F;
+#endif
     Desc.ColorTargets[0].Blend = rstate_GetBlendDesc( RSTATE_BLEND_PRESET_NONE );
     Desc.ColorTargets[1].Blend = rstate_GetBlendDesc( RSTATE_BLEND_PRESET_NONE );
     Desc.ColorTargets[2].Blend = rstate_GetBlendDesc( RSTATE_BLEND_PRESET_NONE );
     Desc.DepthFormat = RTARGET_FORMAT_DEPTH_STENCIL;
     Desc.ViewMask = Multiview ? 0x3u : 0u;
-    Desc.pDebugName = Wireframe ? "GeomDynamicWireGBuffer" : "GeomDynamicGBuffer";
+    Desc.pDebugName = SceneOnly ? "GeomDynamicScene" : ( Wireframe ? "GeomDynamicWireGBuffer" : "GeomDynamicGBuffer" );
 
     return m_dynamicPipelines.GetOrCreate( PipelineKey, Desc );
 }
@@ -348,7 +370,7 @@ xbool GeomMgr::ExecuteDynamicPacket( GeomDrawPacket const& Packet, geom_pass_des
     }
 
     view const* pView = eng_GetView();
-    render_pipeline* pPipeline = GetDynamicPipeline( Packet.RenderFlags );
+    render_pipeline* pPipeline = GetDynamicPipeline( Packet.RenderFlags, Pass.SceneOnly );
     rstate_sampler const* pSampler = GetSampler( RSTATE_SAMPLER_PRESET_LINEAR_CLAMP );
     if( !pView || !pPipeline || !pSampler || !Packet.Resources.pDiffuse || !Packet.pDamageMask ||
         !render_BindPipeline( *pPipeline ) )
@@ -434,8 +456,10 @@ xbool GeomMgr::ExecuteDynamicPacket( GeomDrawPacket const& Packet, geom_pass_des
         return FALSE;
     }
 
+#if X_PROFILE
     m_gBufferGpuDrawCount++;
     m_gBufferInstanceCount++;
     m_gBufferSubmittedIndexCount += Packet.DynamicIndexCount;
+#endif
     return TRUE;
 }

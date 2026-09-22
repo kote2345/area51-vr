@@ -46,21 +46,25 @@ GEOM_PIXEL_OUTPUT ShadeGeometryPixel( GEOM_PIXEL_INPUT input, bool isFrontFace )
         return GeomShadeDistortionPixel( input, materialFlags, fadeAlpha );
     }
 
-    const float3 worldPositionDx = ddx( input.WorldPos );
-    const float3 worldPositionDy = ddy( input.WorldPos );
-    float3       geometricNormal = cross( worldPositionDx, worldPositionDy );
-    const float  geometricNormalLengthSq = dot( geometricNormal, geometricNormal );
-    if( geometricNormalLengthSq > 1e-12f )
+    float3 geometricNormal = input.Normal;
+    if( materialFlags & INSTANCE_FLAG_RECEIVE_LOCAL_SHADOW )
     {
-        geometricNormal *= rsqrt( geometricNormalLengthSq );
-        if( dot( geometricNormal, input.Normal ) < 0.0f )
+        const float3 worldPositionDx = ddx( input.WorldPos );
+        const float3 worldPositionDy = ddy( input.WorldPos );
+        geometricNormal = cross( worldPositionDx, worldPositionDy );
+        const float geometricNormalLengthSq = dot( geometricNormal, geometricNormal );
+        if( geometricNormalLengthSq > 1e-12f )
         {
-            geometricNormal = -geometricNormal;
+            geometricNormal *= rsqrt( geometricNormalLengthSq );
+            if( dot( geometricNormal, input.Normal ) < 0.0f )
+            {
+                geometricNormal = -geometricNormal;
+            }
         }
-    }
-    else
-    {
-        geometricNormal = input.Normal;
+        else
+        {
+            geometricNormal = input.Normal;
+        }
     }
 
     GeomDiffuseResult diffuse = GeomEvaluateDiffuse( input, materialFlags, alphaRef );

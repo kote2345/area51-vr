@@ -140,7 +140,14 @@ void ProjectionAtlas::Kill( void )
 
 void ProjectionAtlas::BeginFrame( void )
 {
-    ASSERT( m_isInitialized );
+    // A failed GeomMgr initialization must not turn into an assertion storm
+    // from every fallback VR frame. The caller will report the failed atlas
+    // preparation and the renderer can keep running while the root error is
+    // diagnosed from the one-time initialization log.
+    if( !m_isInitialized )
+    {
+        return;
+    }
 
     ++m_frameIndex;
     if ( m_frameIndex == 0 )

@@ -28,7 +28,8 @@ float SampleFaceShadowSource( uint sourceIndex,
     const float4 lightData       = GetFaceShadowLightData( sourceIndex );
     const float3 lightPos        = lightPosRadius.xyz;
     const float  lightRadius     = lightPosRadius.w;
-    const float3 lightDir        = normalize( lightDirFalloff.xyz );
+    // Spot directions are normalized in ShadowMapMgr before upload.
+    const float3 lightDir        = lightDirFalloff.xyz;
     const float  lightFalloff    = lightDirFalloff.w;
     const float  cosOuter        = lightData.x;
     const float  nearZ           = lightData.y;

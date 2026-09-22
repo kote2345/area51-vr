@@ -17,6 +17,8 @@
 #include <openxr/openxr_platform.h>
 
 #include <cstdio>
+#include <cstring>
+#include <vector>
 
 namespace a51::xr
 {
@@ -79,10 +81,40 @@ xbool PlatformCreateInstance( const runtime_create_info& Info,
     if( !ppInstance )
         return FALSE;
 
-    const char* Extensions[] = {
+    std::vector<const char*> Extensions = {
         XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
         XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME,
     };
+
+    // Request the Quest refresh-rate control only when the active OpenXR
+    // runtime advertises it; unsupported runtimes must still start normally.
+    uint32_t ExtensionCount = 0;
+    if( XR_SUCCEEDED( xrEnumerateInstanceExtensionProperties(
+                          NULL, 0, &ExtensionCount, NULL ) ) &&
+        ( ExtensionCount > 0 ) )
+    {
+        std::vector<XrExtensionProperties> AvailableExtensions( ExtensionCount );
+        for( XrExtensionProperties& Extension : AvailableExtensions )
+        {
+            Extension = { XR_TYPE_EXTENSION_PROPERTIES };
+        }
+
+        if( XR_SUCCEEDED( xrEnumerateInstanceExtensionProperties(
+                              NULL, ExtensionCount, &ExtensionCount,
+                              AvailableExtensions.data() ) ) )
+        {
+            for( const XrExtensionProperties& Extension : AvailableExtensions )
+            {
+                if( std::strcmp( Extension.extensionName,
+                                 XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME ) == 0 )
+                {
+                    Extensions.push_back(
+                        XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME );
+                    break;
+                }
+            }
+        }
+    }
 
     XrInstanceCreateInfoAndroidKHR AndroidInfo{
         XR_TYPE_INSTANCE_CREATE_INFO_ANDROID_KHR
@@ -98,8 +130,8 @@ xbool PlatformCreateInstance( const runtime_create_info& Info,
 
     XrInstanceCreateInfo CreateInfo{ XR_TYPE_INSTANCE_CREATE_INFO };
     CreateInfo.next = &AndroidInfo;
-    CreateInfo.enabledExtensionCount = 2;
-    CreateInfo.enabledExtensionNames = Extensions;
+    CreateInfo.enabledExtensionCount = static_cast<uint32_t>( Extensions.size() );
+    CreateInfo.enabledExtensionNames = Extensions.data();
     CreateInfo.applicationInfo.applicationVersion = Info.ApplicationVersion;
     CreateInfo.applicationInfo.engineVersion       = Info.EngineVersion;
     CreateInfo.applicationInfo.apiVersion          = XR_MAKE_VERSION( 1, 0, 0 );

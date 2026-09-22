@@ -301,3 +301,11 @@ PS_OUTPUT PSMain( GEOM_PIXEL_INPUT input, bool isFrontFace : SV_IsFrontFace )
     output.Glow = ( ShaderFlags & INSTANCE_FLAG_GLOWING ) ? output.FinalColor : 0.0f;
     return output;
 }
+
+// Direct color/depth path. Reuse the same lighting and alpha-test code while
+// exposing only the final color attachment; NormalDepth and Glow are not
+// produced in this mode.
+float4 PSScene( GEOM_PIXEL_INPUT input, bool isFrontFace : SV_IsFrontFace ) : SV_Target0
+{
+    return PSMain( input, isFrontFace ).FinalColor;
+}

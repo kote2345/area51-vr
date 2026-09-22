@@ -215,8 +215,9 @@ struct geom_pass_desc
     // GeomMgr uses them for screen-space shader constants only.
     u32 TargetWidth;
     u32 TargetHeight;
+    xbool SceneOnly;
 
-    geom_pass_desc( void ) : TargetWidth( 0 ), TargetHeight( 0 )
+    geom_pass_desc( void ) : TargetWidth( 0 ), TargetHeight( 0 ), SceneOnly( FALSE )
     {
     }
 };
@@ -569,7 +570,7 @@ class GeomMgr
     xbool BuildDynamicPackets( xarray<dynamic_geometry_draw> const& draws );
     xbool UploadDynamicGeometry( void );
     xbool ExecuteDynamicPacket( GeomDrawPacket const& packet, geom_pass_desc const& pass );
-    render_pipeline* GetDynamicPipeline( u32 renderFlags );
+    render_pipeline* GetDynamicPipeline( u32 renderFlags, xbool sceneOnly = FALSE );
     GeomResourceSnapshot CaptureResourceSnapshot( void ) const;
     void                 ConfigureDrawResources( material const* pMaterial, geometry_render_pass pass,
                                                  radian3 const& distortionNormalRot, cubemap const* pCubeMap );
@@ -676,6 +677,7 @@ class GeomMgr
     shader                          m_dynamicVertexShader;
     shader                          m_dynamicMultiviewVertexShader;
     shader                          m_dynamicPixelShader;
+    shader                          m_dynamicScenePixelShader;
     ShaderBindingLayout             m_dynamicShaderBindings;
     RenderPipelineCache             m_dynamicPipelines;
     rbuffer                         m_dynamicVertexBuffer;

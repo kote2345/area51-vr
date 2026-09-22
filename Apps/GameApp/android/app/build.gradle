@@ -6,6 +6,9 @@ def gameAssetDirectory = project.findProperty('A51_ASSET_DIR') ?: 'src/main/asse
 def a51EnableOpenXR = (project.findProperty('A51_ENABLE_OPENXR') ?: 'false').toBoolean()
 def a51OpenXRHeadersDir = project.findProperty('A51_OPENXR_HEADERS_DIR') ?: ''
 def a51OpenXRLoaderLibrary = project.findProperty('A51_OPENXR_LOADER_LIBRARY') ?: ''
+def a51AndroidConfiguration = project.findProperty('A51_ANDROID_CONFIGURATION') ?: ''
+def a51GBufferLowBw = (project.findProperty('A51_GBUFFER_LOW_BW') ?: 'false').toBoolean()
+def a51DirectRender = (project.findProperty('A51_DIRECT_RENDER') ?: 'false').toBoolean()
 
 android {
     namespace = 'com.area51.game'
@@ -26,7 +29,10 @@ android {
                           '-DA51_BUILD_WINDOWS_TARGETS=OFF',
                           "-DA51_ENABLE_OPENXR=${a51EnableOpenXR ? 'ON' : 'OFF'}",
                           "-DA51_OPENXR_HEADERS_DIR=${a51OpenXRHeadersDir}",
-                          "-DA51_OPENXR_LOADER_LIBRARY=${a51OpenXRLoaderLibrary}"
+                          "-DA51_OPENXR_LOADER_LIBRARY=${a51OpenXRLoaderLibrary}",
+                          "-DA51_ANDROID_CONFIGURATION=${a51AndroidConfiguration}",
+                          "-DA51_GBUFFER_LOW_BW=${a51GBufferLowBw ? 'ON' : 'OFF'}",
+                          "-DA51_DIRECT_RENDER=${a51DirectRender ? 'ON' : 'OFF'}"
                 abiFilters 'arm64-v8a'
             }
         }

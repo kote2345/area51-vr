@@ -472,7 +472,12 @@ void platform_ExecuteGeomPackets( void )
         if( !g_DecalRenderer.RequestProjectionTextures() ||
             !g_GeomMgr.PrepareProjectionAtlas() )
         {
-            x_DebugMsg( "PCRender: failed to prepare projection atlas\n" );
+            static xbool s_projectionAtlasFailureLogged = FALSE;
+            if( !s_projectionAtlasFailureLogged )
+            {
+                x_DebugMsg( "PCRender: failed to prepare projection atlas\n" );
+                s_projectionAtlasFailureLogged = TRUE;
+            }
             g_ForwardRenderMgr.DiscardQueuedDraws();
             return;
         }
@@ -587,6 +592,7 @@ void platform_ExecuteGeomPackets( void )
     geom_pass_desc GeomPass;
     GeomPass.TargetWidth  = Targets.pSceneColor->Desc.Width;
     GeomPass.TargetHeight = Targets.pSceneColor->Desc.Height;
+    GeomPass.SceneOnly    = g_GBufferMgr.IsDirectRenderEnabled();
 
     xbool Result = TRUE;
     u32 GBufferPacketCount = 0;

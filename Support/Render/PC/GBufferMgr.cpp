@@ -18,8 +18,13 @@
 //==============================================================================
 
 #define GBUFFER_FORMAT_FINAL_COLOR RTARGET_FORMAT_RGBA8
+#if defined(A51_GBUFFER_LOW_BW)
+#define GBUFFER_FORMAT_NORMAL_DEPTH RTARGET_FORMAT_RGBA8
+#define GBUFFER_FORMAT_GLOW RTARGET_FORMAT_RGBA8
+#else
 #define GBUFFER_FORMAT_NORMAL_DEPTH RTARGET_FORMAT_RGBA16F
 #define GBUFFER_FORMAT_GLOW RTARGET_FORMAT_RGBA16F
+#endif
 #define GBUFFER_FORMAT_DEPTH RTARGET_FORMAT_DEPTH_STENCIL
 
 //------------------------------------------------------------------------------
@@ -102,6 +107,13 @@ GBufferMgr::GBufferMgr( void )
     : m_isInitialized( FALSE ), m_isGBufferValid( FALSE ), m_areGBufferTargetsActive( FALSE ),
       m_isSceneColorRenderedThisFrame( FALSE ), m_clearGBufferOnBind( FALSE ), m_gBufferWidth( 0 ),
       m_gBufferHeight( 0 ), m_gBufferLayerCount( 1 ), m_multiviewEnabled( FALSE ),
+      m_directRenderEnabled(
+#if defined(A51_DIRECT_RENDER)
+          TRUE
+#else
+          FALSE
+#endif
+      ),
       m_pOverrideColor( NULL ), m_pOverrideDepth( NULL )
 {
 }
@@ -214,16 +226,19 @@ xbool GBufferMgr::InitGBuffer( u32 width, u32 height )
         return FALSE;
     }
 
-    if ( !CreateTarget( m_gBufferTarget[MRT_NORMAL_DEPTH], GBUFFER_FORMAT_NORMAL_DEPTH, s_ClearColorNormalDepth,
-                        "Failed to create GBuffer Normal-Depth target" ) )
+    if ( !m_directRenderEnabled )
     {
-        return FALSE;
-    }
+        if ( !CreateTarget( m_gBufferTarget[MRT_NORMAL_DEPTH], GBUFFER_FORMAT_NORMAL_DEPTH, s_ClearColorNormalDepth,
+                            "Failed to create GBuffer Normal-Depth target" ) )
+        {
+            return FALSE;
+        }
 
-    if ( !CreateTarget( m_gBufferTarget[MRT_GLOW], GBUFFER_FORMAT_GLOW, s_ClearColorZero,
-                        "Failed to create GBuffer Glow target" ) )
-    {
-        return FALSE;
+        if ( !CreateTarget( m_gBufferTarget[MRT_GLOW], GBUFFER_FORMAT_GLOW, s_ClearColorZero,
+                            "Failed to create GBuffer Glow target" ) )
+        {
+            return FALSE;
+        }
     }
 
     if ( !CreateTarget( m_gBufferDepth, GBUFFER_FORMAT_DEPTH, NULL, "Failed to create GBuffer Depth-Stencil" ) )
@@ -233,7 +248,34 @@ xbool GBufferMgr::InitGBuffer( u32 width, u32 height )
 
     m_isGBufferValid = TRUE;
     m_clearGBufferOnBind = TRUE;
+    // This function may be called for both the desktop mirror and XR target
+    // during one frame. Keep the path diagnostic one-shot to avoid turning a
+    // resize/rebind into a per-frame log stream on the game thread.
+    static xbool s_pathLogged = FALSE;
+    if ( !s_pathLogged )
+    {
+        x_DebugMsg( "GBufferMgr: path=%s size=%ux%u layers=%u auxiliary=%s\n",
+                    m_directRenderEnabled ? "direct" : "gbuffer",
+                    width,
+                    height,
+                    m_multiviewEnabled ? 2u : 1u,
+                    m_directRenderEnabled ? "disabled" : "normal-depth+glow" );
+        s_pathLogged = TRUE;
+    }
     return TRUE;
+}
+
+//==============================================================================
+
+void GBufferMgr::SetDirectRenderEnabled( xbool enabled )
+{
+    if ( m_directRenderEnabled == enabled )
+    {
+        return;
+    }
+
+    m_directRenderEnabled = enabled;
+    DestroyGBuffer();
 }
 
 //==============================================================================
@@ -301,8 +343,14 @@ xbool GBufferMgr::SetGBufferTargets( void )
         return FALSE;
     }
 
-    if ( !rtarget_HasRenderTarget( *pSceneColor ) || !rtarget_HasRenderTarget( m_gBufferTarget[MRT_NORMAL_DEPTH] ) ||
-         !rtarget_HasRenderTarget( m_gBufferTarget[MRT_GLOW] ) || !rtarget_HasDepthStencil( *pDepthTarget ) )
+    if ( !rtarget_HasRenderTarget( *pSceneColor ) || !rtarget_HasDepthStencil( *pDepthTarget ) )
+    {
+        return FALSE;
+    }
+
+    if ( !m_directRenderEnabled &&
+         ( !rtarget_HasRenderTarget( m_gBufferTarget[MRT_NORMAL_DEPTH] ) ||
+           !rtarget_HasRenderTarget( m_gBufferTarget[MRT_GLOW] ) ) )
     {
         return FALSE;
     }
@@ -321,7 +369,7 @@ xbool GBufferMgr::SetGBufferTargets( void )
     m_areGBufferTargetsActive = FALSE;
     rtarget_pass_desc pass;
     pass.pColors = boundTargets;
-    pass.ColorCount = BIND_SLOT_COUNT;
+    pass.ColorCount = m_directRenderEnabled ? 1 : BIND_SLOT_COUNT;
     pass.pDepthStencil = &depth;
     pass.ViewMask = m_multiviewEnabled ? 0x3u : 0u;
     if ( !rtarget_BeginPass( pass ) )
@@ -456,11 +504,11 @@ rtarget const* GBufferMgr::GetGBufferTarget( GBufferTarget target ) const
         }
         case GBufferTarget::NormalDepth:
         {
-            return &m_gBufferTarget[MRT_NORMAL_DEPTH];
+            return m_directRenderEnabled ? NULL : &m_gBufferTarget[MRT_NORMAL_DEPTH];
         }
         case GBufferTarget::Glow:
         {
-            return &m_gBufferTarget[MRT_GLOW];
+            return m_directRenderEnabled ? NULL : &m_gBufferTarget[MRT_GLOW];
         }
         default:
         {
@@ -501,7 +549,7 @@ xbool GBufferMgr::GetFrameTargets( frame_render_targets& targets ) const
     targets.IsTargetOverride = m_pOverrideColor != NULL;
     targets.pSceneColor = GetActiveSceneColor();
     targets.pSceneDepth = GetActiveDepthTarget();
-    targets.pGlow = targets.IsTargetOverride ? NULL : &m_gBufferTarget[MRT_GLOW];
+    targets.pGlow = ( targets.IsTargetOverride || m_directRenderEnabled ) ? NULL : &m_gBufferTarget[MRT_GLOW];
 
     if ( !targets.pSceneColor || !rtarget_HasRenderTarget( *targets.pSceneColor ) )
     {

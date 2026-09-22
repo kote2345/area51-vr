@@ -361,6 +361,11 @@ void PostMgr::GlowResources::SetPendingResult( rtarget const* pResult, xbool sto
 
 void PostMgr::ExecuteSelfIllumGlow( void )
 {
+    if ( g_GBufferMgr.IsDirectRenderEnabled() )
+    {
+        return;
+    }
+
     xbool const bStoreHistory = ( m_glow.MotionBlurIntensity > 0.0f );
     f32 historyRetention = 0.0f;
     f32 currentWeight = 1.0f;
@@ -531,7 +536,7 @@ void PostMgr::UpdateGlowStageBegin( void )
 {
     m_glowResources.ResetFrame();
 
-    if ( !g_GBufferMgr.IsGBufferEnabled() )
+    if ( !g_GBufferMgr.IsGBufferEnabled() || g_GBufferMgr.IsDirectRenderEnabled() )
     {
         m_glowResources.ResizeIfNeeded( 0, 0 );
         return;

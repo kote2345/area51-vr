@@ -261,6 +261,15 @@ xbool ResolveSharedPixelBindingSlot( shader const& pixelShader, shader const& sc
     return TRUE;
 }
 
+static xbool GeomInitStep( char const* pName, xbool Result )
+{
+    if ( !Result )
+    {
+        x_DebugMsg( "GeomMgr: initialization failed at %s\n", pName );
+    }
+    return Result;
+}
+
 } // namespace
 
 //==============================================================================
@@ -301,12 +310,20 @@ void GeomMgr::Init( void )
     m_lightingDataBuffer = rbuffer();
     m_lightingDataCapacity = 0;
 
-    // Initialize shaders and resources
-    if ( !InitSamplers() || !CreateSolidTexture( m_whiteTexture, VRAM_TEXTURE_TYPE_2D, 0xFFFFFFFF, "GeomWhite" ) ||
-         !CreateSolidTexture( m_blackTexture, VRAM_TEXTURE_TYPE_2D, 0xFF000000, "GeomBlack" ) ||
-         !CreateSolidTexture( m_blackCubeTexture, VRAM_TEXTURE_TYPE_CUBE, 0xFF000000, "GeomBlackCube" ) ||
-         !InitRigidShaders() || !InitSkinShaders() || !InitDynamicGeometry() || !InitShaderBindings() || !InitProjTextures() ||
-         !InitShadowMaps() || !PrewarmPipelines() )
+    // Initialize shaders and resources. Keep the failing stage visible in the
+    // device log; otherwise a later ProjectionAtlas assertion hides the real
+    // initialization error and all geometry gets discarded.
+    if ( !GeomInitStep( "samplers", InitSamplers() ) ||
+         !GeomInitStep( "white texture", CreateSolidTexture( m_whiteTexture, VRAM_TEXTURE_TYPE_2D, 0xFFFFFFFF, "GeomWhite" ) ) ||
+         !GeomInitStep( "black texture", CreateSolidTexture( m_blackTexture, VRAM_TEXTURE_TYPE_2D, 0xFF000000, "GeomBlack" ) ) ||
+         !GeomInitStep( "black cube texture", CreateSolidTexture( m_blackCubeTexture, VRAM_TEXTURE_TYPE_CUBE, 0xFF000000, "GeomBlackCube" ) ) ||
+         !GeomInitStep( "rigid shaders", InitRigidShaders() ) ||
+         !GeomInitStep( "skin shaders", InitSkinShaders() ) ||
+         !GeomInitStep( "dynamic geometry", InitDynamicGeometry() ) ||
+         !GeomInitStep( "shader bindings", InitShaderBindings() ) ||
+         !GeomInitStep( "projection atlas", InitProjTextures() ) ||
+         !GeomInitStep( "shadow maps", InitShadowMaps() ) ||
+         !GeomInitStep( "pipeline prewarm", PrewarmPipelines() ) )
     {
         m_isInitialized = TRUE;
         Kill();
@@ -1285,6 +1302,13 @@ xbool GeomMgr::BuildSkinDrawData( void )
     m_lSkinIndirectCommands.SetCount( 0 );
     m_lSkinIndirectRuns.SetCount( 0 );
     xarray<SkinRemapCacheEntry> remapCache;
+    // G-buffer sorting commonly leaves packets for the same skinned mesh
+    // adjacent. Remember the last lookup so those packets avoid scanning the
+    // whole per-frame remap cache. The linear search remains the fallback for
+    // non-adjacent meshes.
+    xbool bHaveLastRemap = FALSE;
+    s32   LastRemapMeshHandle = 0;
+    s32   LastRemapCacheIndex = -1;
 
     for ( s32 i = 0; i < m_lDrawPackets.GetCount(); ++i )
     {
@@ -1312,12 +1336,19 @@ xbool GeomMgr::BuildSkinDrawData( void )
         packet.FirstSkinDrawInstance = m_lSkinDrawInstances.GetCount();
 
         s32 remapCacheIndex = -1;
-        for ( s32 r = 0; r < remapCache.GetCount(); ++r )
+        if ( bHaveLastRemap && ( LastRemapMeshHandle == packet.hMesh.Handle ) )
         {
-            if ( remapCache[r].MeshHandle == packet.hMesh.Handle )
+            remapCacheIndex = LastRemapCacheIndex;
+        }
+        else
+        {
+            for ( s32 r = 0; r < remapCache.GetCount(); ++r )
             {
-                remapCacheIndex = r;
-                break;
+                if ( remapCache[r].MeshHandle == packet.hMesh.Handle )
+                {
+                    remapCacheIndex = r;
+                    break;
+                }
             }
         }
 
@@ -1335,6 +1366,10 @@ xbool GeomMgr::BuildSkinDrawData( void )
             x_DebugMsg( "GeomMgr: skin mesh %d changed section count within a frame\n", packet.hMesh.Handle );
             return FALSE;
         }
+
+        bHaveLastRemap       = TRUE;
+        LastRemapMeshHandle  = packet.hMesh.Handle;
+        LastRemapCacheIndex  = remapCacheIndex;
 
         for ( s32 s = 0; s < view.SectionCount; ++s )
         {
@@ -2053,7 +2088,7 @@ xbool GeomMgr::ExecuteRigidIndirectRun( RigidIndirectRun const& run, geom_pass_d
     {
         X_PROFILE_SCOPE_CATEGORY( "Renderer", "Geom/BindIndirectRun" );
         if ( !SetRigidMaterial( packet.pMaterial, packet.RenderFlags, packet.UOffset, packet.VOffset,
-                                packet.MaterialOverride, FALSE, pass ) )
+                                packet.MaterialOverride, pass.SceneOnly, pass ) )
         {
             x_DebugMsg( "GeomMgr: indirect run %u failed to bind material\n", run.FirstCommand );
             return FALSE;
@@ -2082,6 +2117,7 @@ xbool GeomMgr::ExecuteRigidIndirectRun( RigidIndirectRun const& run, geom_pass_d
         }
     }
 
+#if X_PROFILE
     m_gBufferGpuDrawCount++;
     for ( u32 i = 0; i < run.CommandCount; ++i )
     {
@@ -2089,6 +2125,7 @@ xbool GeomMgr::ExecuteRigidIndirectRun( RigidIndirectRun const& run, geom_pass_d
         m_gBufferInstanceCount += command.InstanceCount;
         m_gBufferSubmittedIndexCount += static_cast<u64>( command.IndexCount ) * command.InstanceCount;
     }
+#endif
     return TRUE;
 }
 
@@ -2115,7 +2152,7 @@ xbool GeomMgr::ExecuteSkinIndirectRun( SkinIndirectRun const& run, geom_pass_des
     {
         X_PROFILE_SCOPE_CATEGORY( "Renderer", "Geom/BindSkinIndirectRun" );
         if ( !SetSkinMaterial( packet.pMaterial, packet.RenderFlags, packet.UOffset, packet.VOffset,
-                               packet.MaterialOverride, FALSE, pass ) )
+                                packet.MaterialOverride, pass.SceneOnly, pass ) )
         {
             x_DebugMsg( "GeomMgr: skin indirect run %u failed to bind material\n", run.FirstCommand );
             return FALSE;
@@ -2143,6 +2180,7 @@ xbool GeomMgr::ExecuteSkinIndirectRun( SkinIndirectRun const& run, geom_pass_des
         }
     }
 
+#if X_PROFILE
     m_gBufferGpuDrawCount++;
     m_gBufferSkinSectionDrawCount += run.CommandCount;
     for ( u32 i = 0; i < run.CommandCount; ++i )
@@ -2150,6 +2188,7 @@ xbool GeomMgr::ExecuteSkinIndirectRun( SkinIndirectRun const& run, geom_pass_des
         rdraw_indexed_indirect_command const& command = m_lSkinIndirectCommands[run.FirstCommand + i];
         m_gBufferSubmittedIndexCount += static_cast<u64>( command.IndexCount ) * command.InstanceCount;
     }
+#endif
     return TRUE;
 }
 
@@ -2195,6 +2234,7 @@ xbool GeomMgr::ExecuteGBuffer( geom_pass_desc const& pass )
         }
     }
 
+#if X_PROFILE
     for ( s32 packetIndex = 0; packetIndex < m_lDrawPackets.GetCount(); ++packetIndex )
     {
         GeomDrawPacket const& packet = m_lDrawPackets[packetIndex];
@@ -2203,6 +2243,7 @@ xbool GeomMgr::ExecuteGBuffer( geom_pass_desc const& pass )
             m_gBufferInstanceCount += packet.InstanceCount;
         }
     }
+#endif
     return TRUE;
 }
 
@@ -2237,7 +2278,8 @@ xbool GeomMgr::ExecutePacket( s32 packetIndex, geom_pass_desc const& pass )
         {
             X_PROFILE_SCOPE_CATEGORY( "Renderer", "Geom/BindMaterial" );
             if ( !SetRigidMaterial( packet.pMaterial, packet.RenderFlags, packet.UOffset, packet.VOffset,
-                                    packet.MaterialOverride, packet.Pass != GEOMETRY_PASS_GBUFFER, pass ) )
+                                    packet.MaterialOverride,
+                                    ( packet.Pass != GEOMETRY_PASS_GBUFFER ) || pass.SceneOnly, pass ) )
             {
                 x_DebugMsg( "GeomMgr: rigid packet %d failed to bind material\n", packetIndex );
                 return FALSE;
@@ -2271,9 +2313,11 @@ xbool GeomMgr::ExecutePacket( s32 packetIndex, geom_pass_desc const& pass )
         }
         if ( bDrawn && ( packet.Pass == GEOMETRY_PASS_GBUFFER ) )
         {
+#if X_PROFILE
             m_gBufferGpuDrawCount++;
             m_gBufferInstanceCount += packet.InstanceCount;
             m_gBufferSubmittedIndexCount += static_cast<u64>( packet.Range.IndexCount ) * packet.InstanceCount;
+#endif
         }
         if ( !bDrawn )
         {
@@ -2285,7 +2329,8 @@ xbool GeomMgr::ExecutePacket( s32 packetIndex, geom_pass_desc const& pass )
     {
         X_PROFILE_SCOPE_CATEGORY( "Renderer", "Geom/BindMaterial" );
         if ( !SetSkinMaterial( packet.pMaterial, packet.RenderFlags, packet.UOffset, packet.VOffset,
-                               packet.MaterialOverride, packet.Pass != GEOMETRY_PASS_GBUFFER, pass ) )
+                               packet.MaterialOverride,
+                               ( packet.Pass != GEOMETRY_PASS_GBUFFER ) || pass.SceneOnly, pass ) )
         {
             x_DebugMsg( "GeomMgr: skin packet %d failed to bind material\n", packetIndex );
             return FALSE;
@@ -2333,16 +2378,20 @@ xbool GeomMgr::ExecutePacket( s32 packetIndex, geom_pass_desc const& pass )
             bAnyDraw = TRUE;
             if ( packet.Pass == GEOMETRY_PASS_GBUFFER )
             {
+#if X_PROFILE
                 m_gBufferGpuDrawCount++;
                 m_gBufferSkinSectionDrawCount++;
                 m_gBufferSubmittedIndexCount += static_cast<u64>( section.IndexCount ) * packet.InstanceCount;
+#endif
             }
         }
     }
 
     if ( bAnyDraw && ( packet.Pass == GEOMETRY_PASS_GBUFFER ) )
     {
+#if X_PROFILE
         m_gBufferInstanceCount += packet.InstanceCount;
+#endif
     }
 
     return TRUE;
@@ -2549,8 +2598,13 @@ render_pipeline* GeomMgr::GetRigidPipeline( RenderStateSelection const& state, x
     desc.Raster = rstate_GetRasterDesc( state.Raster );
     desc.ColorCount = state.SceneOnly ? 1 : 3;
     desc.ColorTargets[0].Format = RTARGET_FORMAT_RGBA8;
+#if defined(A51_GBUFFER_LOW_BW)
+    desc.ColorTargets[1].Format = RTARGET_FORMAT_RGBA8;
+    desc.ColorTargets[2].Format = RTARGET_FORMAT_RGBA8;
+#else
     desc.ColorTargets[1].Format = RTARGET_FORMAT_RGBA16F;
     desc.ColorTargets[2].Format = RTARGET_FORMAT_RGBA16F;
+#endif
     desc.ColorTargets[0].Blend = rstate_GetBlendDesc( state.Blend );
     desc.ColorTargets[1].Blend = rstate_GetBlendDesc( state.Blend );
     desc.ColorTargets[2].Blend = rstate_GetBlendDesc( state.Blend );
@@ -2623,8 +2677,13 @@ render_pipeline* GeomMgr::GetSkinPipeline( RenderStateSelection const& state, xb
     desc.Raster = rstate_GetRasterDesc( state.Raster );
     desc.ColorCount = state.SceneOnly ? 1 : 3;
     desc.ColorTargets[0].Format = RTARGET_FORMAT_RGBA8;
+#if defined(A51_GBUFFER_LOW_BW)
+    desc.ColorTargets[1].Format = RTARGET_FORMAT_RGBA8;
+    desc.ColorTargets[2].Format = RTARGET_FORMAT_RGBA8;
+#else
     desc.ColorTargets[1].Format = RTARGET_FORMAT_RGBA16F;
     desc.ColorTargets[2].Format = RTARGET_FORMAT_RGBA16F;
+#endif
     desc.ColorTargets[0].Blend = rstate_GetBlendDesc( state.Blend );
     desc.ColorTargets[1].Blend = rstate_GetBlendDesc( state.Blend );
     desc.ColorTargets[2].Blend = rstate_GetBlendDesc( state.Blend );

@@ -57,12 +57,14 @@ public:
     void  ClearGBuffer        ( void );
     void  BeginFrame          ( void );
     void  SetMultiviewEnabled ( xbool enabled );
+    void  SetDirectRenderEnabled( xbool enabled );
     xbool IsMultiviewEnabled  ( void ) const { return m_multiviewEnabled; }
     void  SetTargetOverride   ( rtarget const* pColor, rtarget const* pDepth );
     xbool GetFrameTargets     ( frame_render_targets& targets ) const;
     
     rtarget const* GetGBufferTarget          ( GBufferTarget target ) const;
     xbool          IsGBufferEnabled          ( void ) const { return m_isGBufferValid; }
+    xbool          IsDirectRenderEnabled     ( void ) const { return m_directRenderEnabled; }
     xbool          WasSceneRenderedThisFrame ( void ) const { return m_isSceneColorRenderedThisFrame; }
     void           GetGBufferSize            ( u32& width, u32& height ) const;
     
@@ -80,6 +82,7 @@ private:
     u32   m_gBufferHeight;
     u32   m_gBufferLayerCount;
     xbool m_multiviewEnabled;
+    xbool m_directRenderEnabled;
     
     rtarget m_sceneColorTarget;
     rtarget m_gBufferTarget[g_gBufferMrtCount];

@@ -262,6 +262,16 @@ void PostMgr::EndPostEffects( void )
     ASSERT( m_isInPost );
     m_isInPost = FALSE;
 
+    // The direct Quest path intentionally has no NormalDepth/Glow targets.
+    // Keep the final scene target active and skip post effects that require
+    // those auxiliary attachments. Screen fades are handled by the late
+    // frame stage and remain available.
+    if ( g_GBufferMgr.IsDirectRenderEnabled() )
+    {
+        g_GBufferMgr.SetFinalColorTarget();
+        return;
+    }
+
     view const* pView = eng_GetView();
     if ( pView )
     {
@@ -540,7 +550,10 @@ void PostMgr::PostStage_BeginFrameThunk( void )
     }
 
     g_GBufferMgr.BeginFrame();
-    g_PostMgr.UpdateGlowStageBegin();
+    if ( !g_GBufferMgr.IsDirectRenderEnabled() )
+    {
+        g_PostMgr.UpdateGlowStageBegin();
+    }
 }
 
 //==============================================================================

@@ -302,6 +302,10 @@ struct VulkanSession::Impl
     XrInstance Instance = XR_NULL_HANDLE;
     XrSystemId SystemId = XR_NULL_SYSTEM_ID;
     XrSession Session = XR_NULL_HANDLE;
+#if defined(TARGET_ANDROID)
+    PFN_xrRequestDisplayRefreshRateFB RequestDisplayRefreshRate = NULL;
+    PFN_xrGetDisplayRefreshRateFB GetDisplayRefreshRate = NULL;
+#endif
     XrSpace Space = XR_NULL_HANDLE;
     XrViewConfigurationType ViewConfigurationType =
         XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -660,6 +664,29 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
         m_State = session_state::Failed;
         return FALSE;
     }
+
+#if defined(TARGET_ANDROID)
+    // Resolve the optional Quest extension. Do not gate the 72 Hz request on
+    // xrEnumerateDisplayRefreshRatesFB: Meta documents that list as deprecated
+    // and permits requests for supported rates it does not enumerate.
+    PFN_xrVoidFunction RefreshRateFunction = NULL;
+    if( XR_SUCCEEDED( xrGetInstanceProcAddr(
+                         m_pImpl->Instance, "xrRequestDisplayRefreshRateFB",
+                         &RefreshRateFunction ) ) && RefreshRateFunction )
+    {
+        m_pImpl->RequestDisplayRefreshRate = reinterpret_cast<
+            PFN_xrRequestDisplayRefreshRateFB>( RefreshRateFunction );
+    }
+
+    RefreshRateFunction = NULL;
+    if( XR_SUCCEEDED( xrGetInstanceProcAddr(
+                         m_pImpl->Instance, "xrGetDisplayRefreshRateFB",
+                         &RefreshRateFunction ) ) && RefreshRateFunction )
+    {
+        m_pImpl->GetDisplayRefreshRate = reinterpret_cast<
+            PFN_xrGetDisplayRefreshRateFB>( RefreshRateFunction );
+    }
+#endif
 
     /*
      * OpenXR input is deliberately translated into the engine's existing
@@ -1195,6 +1222,19 @@ xbool VulkanSession::PollEvents( void )
             return FALSE;
         }
 
+#if defined(TARGET_ANDROID)
+        if( Event.type == XR_TYPE_EVENT_DATA_DISPLAY_REFRESH_RATE_CHANGED_FB )
+        {
+            const XrEventDataDisplayRefreshRateChangedFB* RefreshRateChanged =
+                reinterpret_cast<const XrEventDataDisplayRefreshRateChangedFB*>(
+                    &Event );
+            x_DebugMsg( "OpenXR: display refresh rate changed %.2f -> %.2f Hz\n",
+                        RefreshRateChanged->fromDisplayRefreshRate,
+                        RefreshRateChanged->toDisplayRefreshRate );
+            continue;
+        }
+#endif
+
         if( Event.type != XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED )
             continue;
 
@@ -1218,7 +1258,29 @@ xbool VulkanSession::PollEvents( void )
             }
             m_pImpl->SessionRunning = TRUE;
             m_State = session_state::Running;
-                    }
+
+#if defined(TARGET_ANDROID)
+            if( m_pImpl->RequestDisplayRefreshRate )
+            {
+                const XrResult RequestResult =
+                    m_pImpl->RequestDisplayRefreshRate( m_pImpl->Session,
+                                                        72.0f );
+                float CurrentRefreshRate = 0.0f;
+                const XrResult GetRateResult = m_pImpl->GetDisplayRefreshRate
+                    ? m_pImpl->GetDisplayRefreshRate( m_pImpl->Session,
+                                                       &CurrentRefreshRate )
+                    : XR_ERROR_FUNCTION_UNSUPPORTED;
+                x_DebugMsg( "OpenXR: request 72 Hz result=%d, current=%.2f Hz (query=%d)\n",
+                            static_cast<int>( RequestResult ),
+                            CurrentRefreshRate,
+                            static_cast<int>( GetRateResult ) );
+            }
+            else
+            {
+                x_DebugMsg( "OpenXR: XR_FB_display_refresh_rate unavailable; cannot request 72 Hz\n" );
+            }
+#endif
+        }
         else if( StateChanged->state == XR_SESSION_STATE_STOPPING &&
                  m_pImpl->SessionRunning )
         {

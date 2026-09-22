@@ -437,6 +437,11 @@ void PostMgr::BuildFogPalette( render::post_falloff_fn fn, xcolor color, f32 par
 
 void PostMgr::ExecuteZFogFilter( void )
 {
+    if ( g_GBufferMgr.IsDirectRenderEnabled() )
+    {
+        return;
+    }
+
     s32 const paletteIndex = m_fogFilter.PaletteIndex;
     if ( ( paletteIndex < 0 ) || ( paletteIndex >= 5 ) || !m_isFogValid[paletteIndex] )
     {

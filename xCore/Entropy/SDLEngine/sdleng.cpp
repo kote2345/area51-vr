@@ -18,6 +18,15 @@
 #include "x_stdio.hpp"
 #endif
 
+// Per-frame XR tracing is useful while diagnosing the native swapchain, but
+// logging every eye/pass adds measurable CPU and logcat overhead. Keep it
+// available as an opt-in diagnostic build and disabled for normal profiling.
+#if defined(A51_XR_VERBOSE_LOGGING)
+    #define A51_XR_TRACE( ... ) x_DebugMsg( __VA_ARGS__ )
+#else
+    #define A51_XR_TRACE( ... ) do { } while( 0 )
+#endif
+
 //==============================================================================
 //  GLOBAL BACKEND HANDLES
 //==============================================================================
@@ -172,10 +181,10 @@ xbool sdleng_GetVulkanFrameInfoForEye( u32 Eye,
                        : SDLInfo.source_image;
     Info.Width         = s.NativeXRSourceImages[Eye] ? s.NativeXRWidth  : SDLInfo.width;
     Info.Height        = s.NativeXRSourceImages[Eye] ? s.NativeXRHeight : SDLInfo.height;
-    x_DebugMsg( "A51XR SDL frame-info eye=%u texture=%p queriedSrc=%p cachedSrc=%p cmd=%p outSrc=%p size=%ux%u\n",
-                Eye, pTexture, SDLInfo.source_image,
-                s.NativeXRSourceImages[Eye], Info.CommandBuffer,
-                Info.SourceImage, Info.Width, Info.Height );
+    A51_XR_TRACE( "A51XR SDL frame-info eye=%u texture=%p queriedSrc=%p cachedSrc=%p cmd=%p outSrc=%p size=%ux%u\n",
+                  Eye, pTexture, SDLInfo.source_image,
+                  s.NativeXRSourceImages[Eye], Info.CommandBuffer,
+                  Info.SourceImage, Info.Width, Info.Height );
     return TRUE;
 }
 
@@ -209,9 +218,9 @@ xbool sdleng_SetVulkanRenderEye( u32 Eye )
         return FALSE;
     }
     s.NativeXRSourceImages[Eye] = SDLInfo.source_image;
-    x_DebugMsg( "A51XR SDL select-eye eye=%u target=%p source=%p cmd=%p size=%ux%u\n",
-                Eye, s.pSwapchainTexture, SDLInfo.source_image,
-                SDLInfo.command_buffer, s.BackBufferWidth, s.BackBufferHeight );
+    A51_XR_TRACE( "A51XR SDL select-eye eye=%u target=%p source=%p cmd=%p size=%ux%u\n",
+                  Eye, s.pSwapchainTexture, SDLInfo.source_image,
+                  SDLInfo.command_buffer, s.BackBufferWidth, s.BackBufferHeight );
     return TRUE;
 }
 
@@ -490,9 +499,9 @@ xbool sdleng_SubmitCurrentCommandBuffer( void )
 {
     if( s.bNativeXRBackBuffer )
     {
-        x_DebugMsg( "A51XR SDL submit begin cmd=%p acquired=%d rendered=%d pass=%p eye=%u\n",
-                    s.pCommandBuffer, s.bSwapchainAcquired,
-                    s.bBackBufferRendered, s.pRenderPass, s.NativeXREye );
+        A51_XR_TRACE( "A51XR SDL submit begin cmd=%p acquired=%d rendered=%d pass=%p eye=%u\n",
+                      s.pCommandBuffer, s.bSwapchainAcquired,
+                      s.bBackBufferRendered, s.pRenderPass, s.NativeXREye );
     }
     if( !s.pCommandBuffer )
         return TRUE;
@@ -530,8 +539,8 @@ xbool sdleng_SubmitCurrentCommandBuffer( void )
                        : 0.0f;
     if( s.bNativeXRBackBuffer )
     {
-        x_DebugMsg( "A51XR SDL submit done cmd=%p elapsed=%.3fms\n",
-                    pCommandBuffer, s.RenderSubmitMs );
+        A51_XR_TRACE( "A51XR SDL submit done cmd=%p elapsed=%.3fms\n",
+                      pCommandBuffer, s.RenderSubmitMs );
     }
     return TRUE;
 }
@@ -790,8 +799,8 @@ xbool sdleng_AcquireCommandBuffer( void )
 
     if( s.bNativeXRBackBuffer )
     {
-        x_DebugMsg( "A51XR SDL acquire-command cmd=%p native=%d\n",
-                    s.pCommandBuffer, s.bNativeXRBackBuffer );
+        A51_XR_TRACE( "A51XR SDL acquire-command cmd=%p native=%d\n",
+                      s.pCommandBuffer, s.bNativeXRBackBuffer );
     }
     s.RenderStartTime = 0;
     return TRUE;
@@ -829,9 +838,9 @@ xbool sdleng_AcquireSwapchainTexture( void )
         s.AcquiredHeight   = s.NativeXRHeight;
         s.FramePacingWaitMs = 0.0f;
         s.bSwapchainAcquired = TRUE;
-        x_DebugMsg( "A51XR SDL acquire-target native eye=%u target=%p size=%ux%u\n",
-                    s.NativeXREye, s.pSwapchainTexture,
-                    s.BackBufferWidth, s.BackBufferHeight );
+        A51_XR_TRACE( "A51XR SDL acquire-target native eye=%u target=%p size=%ux%u\n",
+                      s.NativeXREye, s.pSwapchainTexture,
+                      s.BackBufferWidth, s.BackBufferHeight );
         return TRUE;
     }
 
@@ -934,12 +943,12 @@ xbool sdleng_BeginRenderPass( const SDL_GPUColorTargetInfo*        pColorTargets
                                        s.pCommandBuffer,
                                        pColorTargets[0].texture,
                                        &FrameInfo );
-        x_DebugMsg( "A51XR SDL begin-pass eye=%u pass=%p color=%p activeTarget=%p queried=%d source=%p cmd=%p\n",
-                    s.NativeXREye, s.pRenderPass,
-                    pColorTargets[0].texture, s.pSwapchainTexture,
-                    bHaveFrameInfo,
-                    bHaveFrameInfo ? FrameInfo.source_image : NULL,
-                    bHaveFrameInfo ? FrameInfo.command_buffer : NULL );
+        A51_XR_TRACE( "A51XR SDL begin-pass eye=%u pass=%p color=%p activeTarget=%p queried=%d source=%p cmd=%p\n",
+                      s.NativeXREye, s.pRenderPass,
+                      pColorTargets[0].texture, s.pSwapchainTexture,
+                      bHaveFrameInfo,
+                      bHaveFrameInfo ? FrameInfo.source_image : NULL,
+                      bHaveFrameInfo ? FrameInfo.command_buffer : NULL );
     }
 
     if( s.RenderStartTime == 0 )
@@ -958,11 +967,11 @@ xbool sdleng_BeginRenderPass( const SDL_GPUColorTargetInfo*        pColorTargets
 
     if( s.bNativeXRBackBuffer )
     {
-        x_DebugMsg( "A51XR SDL pass-start eye=%u color0=%p active=%p backbuffer=%d\n",
-                    s.NativeXREye,
-                    ColorTargetCount ? pColorTargets[0].texture : NULL,
-                    s.pSwapchainTexture,
-                    s.bBackBufferRendered );
+        A51_XR_TRACE( "A51XR SDL pass-start eye=%u color0=%p active=%p backbuffer=%d\n",
+                      s.NativeXREye,
+                      ColorTargetCount ? pColorTargets[0].texture : NULL,
+                      s.pSwapchainTexture,
+                      s.bBackBufferRendered );
     }
 
     sdleng_ResetPipelineBinding();
@@ -980,8 +989,8 @@ void sdleng_EndRenderPass( void )
         return;
 
     if( s.bNativeXRBackBuffer )
-        x_DebugMsg( "A51XR SDL end-pass eye=%u pass=%p target=%p\n",
-                    s.NativeXREye, s.pRenderPass, s.pSwapchainTexture );
+        A51_XR_TRACE( "A51XR SDL end-pass eye=%u pass=%p target=%p\n",
+                      s.NativeXREye, s.pRenderPass, s.pSwapchainTexture );
 
     static xprofile_counter RenderPassCountMetric =
         x_GetProfiler().RegisterCounter( "RenderPassCalls", "Renderer" );
@@ -1009,9 +1018,9 @@ xbool sdleng_EndFrame( void )
 {
     if( s.bNativeXRBackBuffer )
     {
-        x_DebugMsg( "A51XR SDL end-frame cmd=%p target=%p rendered=%d\n",
-                    s.pCommandBuffer, s.pSwapchainTexture,
-                    s.bBackBufferRendered );
+        A51_XR_TRACE( "A51XR SDL end-frame cmd=%p target=%p rendered=%d\n",
+                      s.pCommandBuffer, s.pSwapchainTexture,
+                      s.bBackBufferRendered );
     }
     return sdleng_SubmitCurrentCommandBuffer();
 }

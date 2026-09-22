@@ -55,7 +55,8 @@ float GeomComputeSpotAttenuation( GEOM_PIXEL_INPUT input, uint lightIndex, float
         return 1.0f;
     }
 
-    spotDir *= rsqrt( spotDirLenSq );
+    // Dynamic-light directions are normalized when packed by LightMgr.
+    // Keep the invalid-vector guard, but avoid renormalizing every shaded pixel.
 
     const float coneCos  = dot( spotDir, lightToPointDir );
     float4 lightCone     = GeomGetLightCone( input, lightIndex );
@@ -131,7 +132,7 @@ float GeomSampleLightCookie( GEOM_PIXEL_INPUT input,
         return 1.0f;
     }
 
-    spotDir *= rsqrt( spotDirLenSq );
+    // Same CPU-side unit-vector invariant as GeomComputeSpotAttenuation.
     const float distAlong = dot( lightToPoint, spotDir );
     if( distAlong <= 1e-4f )
     {
@@ -184,6 +185,15 @@ float GeomComputeLocalLightAttenuation( GEOM_PIXEL_INPUT input, uint lightIndex,
     const float3 lightToPoint = worldPos - lightVec.xyz;
     const float3 toLight = -lightToPoint;
     const float  distSq  = dot( toLight, toLight );
+    const float  radius  = max( lightVec.w, 1e-4f );
+
+    // Outside the light's support the radial attenuation is exactly zero.
+    // Reject before sqrt and spot/cookie work, which is common for local lights.
+    if( distSq >= radius * radius )
+    {
+        pointToLightDir = 0.0f;
+        return 0.0f;
+    }
 
     if( distSq <= 1e-8f )
     {
@@ -275,7 +285,11 @@ GeomLightingResult GeomComputeLighting( GEOM_PIXEL_INPUT input,
                 if( computeSpecular )
                 {
                     const float3 H        = normalize( L + viewDir );
-                    const float  specTerm = pow( saturate( dot( input.Normal, H ) ), 16.0f );
+                    const float  specBase = saturate( dot( input.Normal, H ) );
+                    const float  spec2    = specBase * specBase;
+                    const float  spec4    = spec2 * spec2;
+                    const float  spec8    = spec4 * spec4;
+                    const float  specTerm = spec8 * spec8;
                     result.Specular += lightColor * ( specTerm * lightScale );
                 }
             }

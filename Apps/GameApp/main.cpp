@@ -472,6 +472,9 @@ static xbool ShouldAdvanceWorld( void )
 void AdvanceSimulation( f32 DeltaTime )
 {
     X_PROFILE_SCOPE_CATEGORY( "Context", "AdvanceSimulation" );
+#if !defined( X_RETAIL )
+    const xtick A51PerfSimulationStart = x_GetTime();
+#endif
 
 
     #if !defined(X_RETAIL)
@@ -527,6 +530,34 @@ void AdvanceSimulation( f32 DeltaTime )
     }
 
     g_NetworkMgr.AdvanceSimulation( DeltaTime );
+
+#if !defined( X_RETAIL )
+    // Keep profiling logs bounded: one aggregate line per second instead of
+    // logging from the simulation loop on every frame.
+    static xtick s_A51PerfWindowStart = 0;
+    static u32   s_A51PerfSamples    = 0;
+    static f32   s_A51PerfTotalMs    = 0.0f;
+    static f32   s_A51PerfMaxMs      = 0.0f;
+    const xtick A51PerfNow = x_GetTime();
+    if( s_A51PerfWindowStart == 0 )
+        s_A51PerfWindowStart = A51PerfNow;
+    const f32 A51PerfSampleMs = x_TicksToMs( A51PerfNow - A51PerfSimulationStart );
+    s_A51PerfSamples++;
+    s_A51PerfTotalMs += A51PerfSampleMs;
+    s_A51PerfMaxMs = MAX( s_A51PerfMaxMs, A51PerfSampleMs );
+    const f32 A51PerfWindowMs = x_TicksToMs( A51PerfNow - s_A51PerfWindowStart );
+    if( A51PerfWindowMs >= 1000.0f )
+    {
+        x_DebugMsg( "A51Perf simulation samples=%u avg_ms=%.3f max_ms=%.3f\n",
+                    s_A51PerfSamples,
+                    s_A51PerfSamples ? ( s_A51PerfTotalMs / s_A51PerfSamples ) : 0.0f,
+                    s_A51PerfMaxMs );
+        s_A51PerfWindowStart = A51PerfNow;
+        s_A51PerfSamples    = 0;
+        s_A51PerfTotalMs    = 0.0f;
+        s_A51PerfMaxMs      = 0.0f;
+    }
+#endif
 }
 
 //==============================================================================
@@ -1552,11 +1583,55 @@ static xbool RenderGameStereoEyeXR( u32 Eye,
     return bAfterInfo;
 }
 
+#if !defined( X_RETAIL )
+static void A51PerfRecordRenderSample( const char* pMode, f32 RenderMs )
+{
+    static xtick s_A51PerfWindowStart = 0;
+    static u32   s_A51PerfSamples    = 0;
+    static f32   s_A51PerfTotalMs    = 0.0f;
+    static f32   s_A51PerfMaxMs      = 0.0f;
+
+    const xtick A51PerfNow = x_GetTime();
+    if( s_A51PerfWindowStart == 0 )
+        s_A51PerfWindowStart = A51PerfNow;
+
+    s_A51PerfSamples++;
+    s_A51PerfTotalMs += RenderMs;
+    s_A51PerfMaxMs = MAX( s_A51PerfMaxMs, RenderMs );
+    if( x_TicksToMs( A51PerfNow - s_A51PerfWindowStart ) < 1000.0f )
+        return;
+
+    x_DebugMsg( "A51Perf render mode=%s avg_ms=%.3f max_ms=%.3f packets=%d rigid=%d skin=%d gbuffer_draws=%u instances=%u indices=%llu runs=%u/%u\n",
+                pMode,
+                s_A51PerfSamples ? ( s_A51PerfTotalMs / s_A51PerfSamples ) : 0.0f,
+                s_A51PerfMaxMs,
+                g_GeomMgr.GetPacketCount(),
+                g_GeomMgr.GetRigidInstanceCount(),
+                g_GeomMgr.GetSkinInstanceCount(),
+                g_GeomMgr.GetGBufferGpuDrawCount(),
+                g_GeomMgr.GetGBufferInstanceCount(),
+                static_cast<unsigned long long>( g_GeomMgr.GetGBufferSubmittedIndexCount() ),
+                g_GeomMgr.GetGBufferRigidIndirectRunCount(),
+                g_GeomMgr.GetGBufferSkinIndirectRunCount() );
+
+    s_A51PerfWindowStart = A51PerfNow;
+    s_A51PerfSamples = 0;
+    s_A51PerfTotalMs = 0.0f;
+    s_A51PerfMaxMs = 0.0f;
+}
+#endif
+
 static void RenderGameStereoXR( void )
 {
-        if( !g_XRGameFrameBridge || !sdleng_HasVulkanExternalDevice() )
+#if !defined( X_RETAIL )
+    const xtick A51PerfRenderStart = x_GetTime();
+#endif
+    if( !g_XRGameFrameBridge || !sdleng_HasVulkanExternalDevice() )
     {
-                RenderGame();
+        RenderGame();
+#if !defined( X_RETAIL )
+        A51PerfRecordRenderSample( "legacy", x_TicksToMs( x_GetTime() - A51PerfRenderStart ) );
+#endif
         return;
     }
 
@@ -1612,7 +1687,11 @@ static void RenderGameStereoXR( void )
             g_XRRenderHeight = 0;
             g_XRFrameStereoRendered = TRUE;
             g_XRFrameMultiviewRendered = TRUE;
-                        return;
+#if !defined( X_RETAIL )
+            A51PerfRecordRenderSample( g_GBufferMgr.IsDirectRenderEnabled() ? "direct-multiview" : "multiview",
+                                       x_TicksToMs( x_GetTime() - A51PerfRenderStart ) );
+#endif
+            return;
         }
     }
 
@@ -1641,6 +1720,9 @@ static void RenderGameStereoXR( void )
     g_XRRenderWidth = 0;
     g_XRRenderHeight = 0;
     g_XRFrameStereoRendered = TRUE;
+#if !defined( X_RETAIL )
+    A51PerfRecordRenderSample( "stereo-fallback", x_TicksToMs( x_GetTime() - A51PerfRenderStart ) );
+#endif
     }
 #endif
 

@@ -64,6 +64,10 @@ shaders:
     {
     }
 
+    shader dynamic_geometry_scene_ps pixel a51_dynamic_geometry.hlsl PSScene ps_6_0
+    {
+    }
+
     shader primitive_basic_vs vertex a51_primitive.hlsl VSMain vs_6_0
     {
     }
