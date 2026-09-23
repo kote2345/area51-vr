@@ -189,7 +189,9 @@ void RecordGameImageCopy( VkCommandBuffer CommandBuffer,
                           u32 DestinationWidth,
                           u32 DestinationHeight,
                           u32 SourceLayer = 0,
-                          xbool bSourceShaderRead = FALSE )
+                          xbool bSourceShaderRead = FALSE,
+                          VkFormat SourceFormat = VK_FORMAT_UNDEFINED,
+                          VkFormat DestinationFormat = VK_FORMAT_UNDEFINED )
 {
         VkImageMemoryBarrier SourceToTransfer{
         VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
@@ -230,21 +232,52 @@ void RecordGameImageCopy( VkCommandBuffer CommandBuffer,
                           0, 0, NULL, 0, NULL,
                           static_cast<u32>( ARRAYSIZE( Barriers ) ), Barriers );
 
-    VkImageBlit Blit{};
-    Blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    Blit.srcSubresource.baseArrayLayer = SourceLayer;
-    Blit.srcSubresource.layerCount = 1;
-    Blit.srcOffsets[1] = {
-        static_cast<s32>( SourceWidth ), static_cast<s32>( SourceHeight ), 1 };
-    Blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    Blit.dstSubresource.layerCount = 1;
-    Blit.dstOffsets[1] = {
-        static_cast<s32>( DestinationWidth ),
-        static_cast<s32>( DestinationHeight ), 1 };
-    vkCmdBlitImage( CommandBuffer, SourceImage,
-                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    DestinationImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    1, &Blit, VK_FILTER_LINEAR );
+    const xbool bSameSize = (SourceWidth == DestinationWidth) &&
+                            (SourceHeight == DestinationHeight);
+    const xbool bMatchingSrgbPair =
+        ((SourceFormat == VK_FORMAT_R8G8B8A8_UNORM) &&
+         (DestinationFormat == VK_FORMAT_R8G8B8A8_SRGB)) ||
+        ((SourceFormat == VK_FORMAT_B8G8R8A8_UNORM) &&
+         (DestinationFormat == VK_FORMAT_B8G8R8A8_SRGB));
+
+    if( bSameSize && bMatchingSrgbPair )
+    {
+        /* The game renders gamma-encoded colors into an UNORM target. A blit
+         * to an sRGB OpenXR image applies another sRGB encode and brightens
+         * the picture. Copying preserves the existing encoded texels; the
+         * OpenXR compositor then decodes them through the sRGB image format. */
+        VkImageCopy Copy{};
+        Copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        Copy.srcSubresource.baseArrayLayer = SourceLayer;
+        Copy.srcSubresource.layerCount = 1;
+        Copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        Copy.dstSubresource.layerCount = 1;
+        Copy.extent.width = SourceWidth;
+        Copy.extent.height = SourceHeight;
+        Copy.extent.depth = 1;
+        vkCmdCopyImage( CommandBuffer, SourceImage,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        DestinationImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        1, &Copy );
+    }
+    else
+    {
+        VkImageBlit Blit{};
+        Blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        Blit.srcSubresource.baseArrayLayer = SourceLayer;
+        Blit.srcSubresource.layerCount = 1;
+        Blit.srcOffsets[1] = {
+            static_cast<s32>( SourceWidth ), static_cast<s32>( SourceHeight ), 1 };
+        Blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        Blit.dstSubresource.layerCount = 1;
+        Blit.dstOffsets[1] = {
+            static_cast<s32>( DestinationWidth ),
+            static_cast<s32>( DestinationHeight ), 1 };
+        vkCmdBlitImage( CommandBuffer, SourceImage,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                        DestinationImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                        1, &Blit, VK_FILTER_LINEAR );
+    }
 
     VkImageMemoryBarrier SourceFromTransfer{
         VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
@@ -1646,7 +1679,8 @@ xbool VulkanSession::PrepareQuadFrame( const vulkan_frame_info& FrameInfo,
             CommandBuffer, SourceImage,
             Swapchain.Images[m_pImpl->AcquiredImageIndices[0]].image,
             FrameInfo.Width, FrameInfo.Height,
-            Swapchain.Width, Swapchain.Height );
+            Swapchain.Width, Swapchain.Height,
+            0, FALSE, VK_FORMAT_R8G8B8A8_UNORM, Swapchain.Format );
 
         m_pImpl->QuadLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
         m_pImpl->QuadLayer.space = m_pImpl->Space;
@@ -1929,7 +1963,8 @@ xbool VulkanSession::PrepareStereoFrameInternal( const vulkan_frame_info& LeftFr
                 EyeFrame.Width, EyeFrame.Height,
                 Swapchain.Width, Swapchain.Height,
                 bArraySource ? ViewIndex : 0,
-                bArraySource );
+                bArraySource,
+                VK_FORMAT_R8G8B8A8_UNORM, Swapchain.Format );
 
 
             static u32 LoggedStereoHandles = 0;
