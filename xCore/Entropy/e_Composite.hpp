@@ -56,6 +56,12 @@ void    composite_Blit          ( const rtarget&         Source,
                                   rstate_sampler_preset  SamplerMode = RSTATE_SAMPLER_PRESET_POINT_CLAMP,
                                   const char*            pSourceBindingName = NULL );
 
+void    composite_BlitMultiview ( const rtarget&         Source,
+                                  composite_blend_mode   BlendMode = COMPOSITE_BLEND_COPY,
+                                  f32                    Alpha = 1.0f,
+                                  rstate_sampler_preset  SamplerMode = RSTATE_SAMPLER_PRESET_POINT_CLAMP );
+
+
 //==============================================================================
 #endif // E_COMPOSITE_HPP
 //==============================================================================

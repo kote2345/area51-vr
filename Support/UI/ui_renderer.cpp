@@ -37,7 +37,7 @@ static void UIStage_Prepare( void )
 
 static void UIStage_Execute( void )
 {
-    g_UIRenderer.Execute();
+    g_UIRenderer.ExecuteFrameUI();
 }
 
 static const eng_frame_stage s_UIPrepareStage =
@@ -827,6 +827,8 @@ ui_renderer::ui_renderer( void ) :
     m_pipelines           (),
     m_prewarmedFormat     ( RTARGET_FORMAT_COUNT ),
     m_bPrepared           ( FALSE ),
+    m_bStereoOverlay      ( FALSE ),
+    m_pStereoOverlayTarget( NULL ),
     m_bStagesRegistered   ( FALSE ),
     m_isInitialized        ( FALSE )
 {
@@ -900,6 +902,13 @@ void ui_renderer::RefreshViewport( void )
     s32 Width;
     s32 Height;
     eng_GetRes( Width, Height );
+    m_Viewport.SetOutputSize( Width, Height );
+}
+
+//------------------------------------------------------------------------------
+
+void ui_renderer::SetOutputSize( s32 Width, s32 Height )
+{
     m_Viewport.SetOutputSize( Width, Height );
 }
 
@@ -1119,6 +1128,69 @@ void ui_renderer::BeginFrame( void )
     m_PreparedVertices = 0;
     m_PreparedIndices  = 0;
     m_bPrepared = FALSE;
+    m_bStereoOverlay = FALSE;
+}
+
+void ui_renderer::SetStereoOverlayEnabled( xbool Enabled )
+{
+    m_bStereoOverlay = Enabled;
+    if( !Enabled )
+        m_pStereoOverlayTarget = NULL;
+}
+
+void ui_renderer::SetStereoOverlayTarget( const rtarget* pTarget )
+{
+    m_bStereoOverlay = (pTarget != NULL);
+    m_pStereoOverlayTarget = pTarget;
+}
+
+void ui_renderer::ExecuteFrameUI( void )
+{
+    if( !m_bStereoOverlay )
+    {
+        Execute();
+        return;
+    }
+
+    if( !m_bPrepared )
+    {
+        m_bStereoOverlay = FALSE;
+        m_pStereoOverlayTarget = NULL;
+        return;
+    }
+
+    if( m_pStereoOverlayTarget )
+    {
+        rtarget_color_attachment_desc Color;
+        Color.pTarget = m_pStereoOverlayTarget;
+        Color.LoadOp = RTARGET_LOAD_LOAD;
+        Color.StoreOp = RTARGET_STORE_STORE;
+        Color.Layer = 0;
+        rtarget_pass_desc Pass;
+        Pass.pColors = &Color;
+        Pass.ColorCount = 1;
+        Pass.ViewMask = 0x3u;
+        if( rtarget_BeginPass( Pass ) )
+        {
+            Execute( FALSE );
+            rtarget_EndPass();
+        }
+    }
+    else
+    {
+        rtarget_backbuffer_pass_desc Pass;
+        Pass.ViewMask = 0x3u;
+        Pass.bUseDepth = FALSE;
+        Pass.ColorLoadOp = RTARGET_LOAD_LOAD;
+        if( rtarget_BeginBackBufferPass( Pass ) )
+        {
+            Execute( FALSE );
+            rtarget_EndPass();
+        }
+    }
+    m_bPrepared = FALSE;
+    m_bStereoOverlay = FALSE;
+    m_pStereoOverlayTarget = NULL;
 }
 
 //------------------------------------------------------------------------------
@@ -1165,7 +1237,7 @@ void ui_renderer::Prepare( void )
 
 //------------------------------------------------------------------------------
 
-void ui_renderer::Execute( void )
+void ui_renderer::Execute( xbool KeepPrepared )
 {
     if( !m_isInitialized || !m_bPrepared )
         return;
@@ -1187,7 +1259,9 @@ void ui_renderer::Execute( void )
         }
     }
 
-    const rtarget* pBackBuffer = rtarget_GetBackBuffer();
+    const rtarget* pBackBuffer = rtarget_IsBackBufferPassActive()
+                               ? rtarget_GetCurrentTarget( 0 )
+                               : rtarget_GetBackBuffer();
     if( !pBackBuffer ||
         (m_Viewport.GetOutputWidth() <= 0) ||
         (m_Viewport.GetOutputHeight() <= 0) ||
@@ -1315,7 +1389,8 @@ void ui_renderer::Execute( void )
     FullScissor.Height = (s32)pBackBuffer->Desc.Height;
     rdraw_SetScissor( FullScissor );
 
-    m_bPrepared = FALSE;
+    if( !KeepPrepared )
+        m_bPrepared = FALSE;
     if( bOwnsBackBufferPass )
         rtarget_EndPass();
 }

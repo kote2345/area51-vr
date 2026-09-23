@@ -58,6 +58,8 @@ public:
     void  BeginFrame          ( void );
     void  SetMultiviewEnabled ( xbool enabled );
     void  SetDirectRenderEnabled( xbool enabled );
+    void  SetVRDirectOutputEnabled( xbool enabled );
+    void  SetVRResolveOutputEnabled( xbool enabled );
     xbool IsMultiviewEnabled  ( void ) const { return m_multiviewEnabled; }
     void  SetTargetOverride   ( rtarget const* pColor, rtarget const* pDepth );
     xbool GetFrameTargets     ( frame_render_targets& targets ) const;
@@ -83,6 +85,8 @@ private:
     u32   m_gBufferLayerCount;
     xbool m_multiviewEnabled;
     xbool m_directRenderEnabled;
+    xbool m_vrDirectOutputEnabled;
+    xbool m_vrResolveOutputEnabled;
     
     rtarget m_sceneColorTarget;
     rtarget m_gBufferTarget[g_gBufferMrtCount];

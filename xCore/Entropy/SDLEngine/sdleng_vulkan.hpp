@@ -21,6 +21,9 @@ struct sdleng_vulkan_device_info
     u32   RenderWidth;
     u32   RenderHeight;
     xbool MultiviewEnabled;
+    xbool DirectRenderEnabled;
+    xbool DirectRenderBgra;
+    xbool DirectRenderArray;
 };
 
 struct sdleng_vulkan_frame_info
@@ -38,9 +41,11 @@ xbool sdleng_GetVulkanFrameInfoForEye( u32 Eye,
 xbool sdleng_GetVulkanFrameInfoForTarget( const rtarget& Target,
                                          sdleng_vulkan_frame_info& Info );
 xbool sdleng_SetVulkanRenderEye( u32 Eye );
+xbool sdleng_SetVulkanEyeImage( u32 Eye, void* VkImage );
 xbool sdleng_SetVulkanExternalDevice( const sdleng_vulkan_device_info& Info );
 void  sdleng_ClearVulkanExternalDevice( void );
 xbool sdleng_HasVulkanExternalDevice( void );
 xbool sdleng_VulkanMultiviewEnabled( void );
+xbool sdleng_VulkanArraySwapchainEnabled( void );
 
 #endif // SDLENG_VULKAN_HPP

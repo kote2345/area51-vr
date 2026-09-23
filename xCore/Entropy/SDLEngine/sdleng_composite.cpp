@@ -33,20 +33,26 @@ static_assert( sizeof(composite_params) == 32, "CompositeParams layout must matc
 
 struct composite_pipeline_key
 {
+    const shader*         pVertexShader;
+    const shader_backend* pVertexBackend;
     const shader*         pPixelShader;
     const shader_backend* pPixelBackend;
     composite_blend_mode  BlendMode;
     rtarget_format        ColorFormat;
     rtarget_format        DepthFormat;
     u32                   SampleCount;
+    u32                   ViewMask;
 
     composite_pipeline_key( void ) :
+        pVertexShader( NULL ),
+        pVertexBackend( NULL ),
         pPixelShader ( NULL ),
         pPixelBackend( NULL ),
         BlendMode    ( COMPOSITE_BLEND_ALPHA ),
         ColorFormat  ( RTARGET_FORMAT_COUNT ),
         DepthFormat  ( RTARGET_FORMAT_COUNT ),
-        SampleCount  ( 1 )
+        SampleCount  ( 1 ),
+        ViewMask     ( 0 )
     {
     }
 };
@@ -66,14 +72,18 @@ static struct composite_locals
     composite_locals( void ) :
         bInitialized( FALSE ),
         VertexShader (),
+        MultiviewVertexShader(),
         PixelShader  (),
+        MultiviewPixelShader(),
         Pipelines    ()
     {
     }
 
     xbool                           bInitialized;
     shader                          VertexShader;
+    shader                          MultiviewVertexShader;
     shader                          PixelShader;
+    shader                          MultiviewPixelShader;
     rstate_sampler                  Samplers[RSTATE_SAMPLER_PRESET_COUNT];
     xarray<composite_pipeline_entry*> Pipelines;
 } s;
@@ -111,12 +121,15 @@ static rstate_blend_preset composite_GetBlendPreset( composite_blend_mode BlendM
 static xbool composite_KeyEquals( const composite_pipeline_key& A,
                                   const composite_pipeline_key& B )
 {
-    return (A.pPixelShader  == B.pPixelShader)  &&
+    return (A.pVertexShader == B.pVertexShader) &&
+           (A.pVertexBackend == B.pVertexBackend) &&
+           (A.pPixelShader  == B.pPixelShader)  &&
            (A.pPixelBackend == B.pPixelBackend) &&
            (A.BlendMode     == B.BlendMode)     &&
            (A.ColorFormat   == B.ColorFormat)   &&
            (A.DepthFormat   == B.DepthFormat)   &&
-           (A.SampleCount   == B.SampleCount);
+           (A.SampleCount   == B.SampleCount)   &&
+           (A.ViewMask      == B.ViewMask);
 }
 
 //==============================================================================
@@ -146,6 +159,8 @@ static void composite_ReleaseResources( void )
         rstate_DestroySampler( s.Samplers[i] );
 
     shader_Destroy( s.PixelShader );
+    shader_Destroy( s.MultiviewPixelShader );
+    shader_Destroy( s.MultiviewVertexShader );
     shader_Destroy( s.VertexShader );
 }
 
@@ -159,11 +174,26 @@ static xbool composite_CreateResources( void )
         return FALSE;
     }
 
+    if( !shader_LoadFromEcs( s.MultiviewVertexShader,
+                             "composite_multiview_vs.vs.ecs" ) )
+    {
+        x_DebugMsg( "CompositeMgr: failed to load multiview composite vertex shader\n" );
+        return FALSE;
+    }
+
     if( !shader_LoadFromEcs( s.PixelShader, "composite_ps.ps.ecs" ) )
     {
         x_DebugMsg( "CompositeMgr: failed to load composite pixel shader\n" );
         return FALSE;
     }
+
+    if( !shader_LoadFromEcs( s.MultiviewPixelShader,
+                             "composite_multiview_ps.ps.ecs" ) )
+    {
+        x_DebugMsg( "CompositeMgr: failed to load multiview composite pixel shader\n" );
+        return FALSE;
+    }
+
 
     for( s32 i = 0; i < RSTATE_SAMPLER_PRESET_COUNT; i++ )
     {
@@ -223,10 +253,13 @@ static xbool composite_SetPipelineKey( composite_pipeline_key& Key,
 
     Key.pPixelShader  = &PixelShader;
     Key.pPixelBackend = PixelShader.pBackend;
+    Key.pVertexShader = &s.VertexShader;
+    Key.pVertexBackend = s.VertexShader.pBackend;
     Key.BlendMode     = BlendMode;
     Key.ColorFormat   = ColorFormat;
     Key.DepthFormat   = DepthFormat;
     Key.SampleCount   = SampleCount ? SampleCount : 1;
+    Key.ViewMask      = 0;
     return TRUE;
 }
 
@@ -247,12 +280,21 @@ static xbool composite_BuildPipelineKey( composite_pipeline_key& Key,
         return FALSE;
 
     const rtarget* pDepthTarget = rtarget_GetCurrentDepth();
-    return composite_SetPipelineKey( Key,
-                                     BlendMode,
-                                     PixelShader,
-                                     pColorTarget->Desc.Format,
-                                     pDepthTarget ? pDepthTarget->Desc.Format : RTARGET_FORMAT_COUNT,
-                                     pColorTarget->Desc.SampleCount );
+    if( !composite_SetPipelineKey( Key,
+                                   BlendMode,
+                                   PixelShader,
+                                   pColorTarget->Desc.Format,
+                                   pDepthTarget ? pDepthTarget->Desc.Format : RTARGET_FORMAT_COUNT,
+                                   pColorTarget->Desc.SampleCount ) )
+        return FALSE;
+
+    if( &PixelShader == &s.MultiviewPixelShader )
+    {
+        Key.pVertexShader  = &s.MultiviewVertexShader;
+        Key.pVertexBackend = s.MultiviewVertexShader.pBackend;
+    }
+    Key.ViewMask = rtarget_GetCurrentViewMask();
+    return TRUE;
 }
 
 //==============================================================================
@@ -265,7 +307,7 @@ static xbool composite_CreatePipelineForKey( render_pipeline&              Pipel
     ColorTarget.Blend  = rstate_GetBlendDesc( composite_GetBlendPreset( Key.BlendMode ) );
 
     render_pipeline_desc Desc;
-    Desc.Shader.pVertexShader = &s.VertexShader;
+    Desc.Shader.pVertexShader = Key.pVertexShader;
     Desc.Shader.pPixelShader  = Key.pPixelShader;
     Desc.Shader.Topology      = SHADER_TOPOLOGY_TRIANGLE_LIST;
     Desc.Raster               = rstate_GetRasterDesc( RSTATE_RASTER_PRESET_SOLID_NO_CULL );
@@ -274,6 +316,7 @@ static xbool composite_CreatePipelineForKey( render_pipeline&              Pipel
     Desc.ColorCount           = 1;
     Desc.DepthFormat          = Key.DepthFormat;
     Desc.SampleCount          = Key.SampleCount;
+    Desc.ViewMask             = Key.ViewMask;
     Desc.pDebugName           = "CompositePipeline";
 
     return render_CreatePipeline( Pipeline, Desc );
@@ -446,6 +489,36 @@ void composite_Blit( const rtarget&        Source,
     if( !pCustomShader && !composite_BindDefaultParams( *pPixelShader, BlendMode, Alpha ) )
         return;
 
+    rdraw_Draw( 3 );
+}
+
+void composite_BlitMultiview( const rtarget& Source,
+                               composite_blend_mode BlendMode,
+                               f32 Alpha,
+                               rstate_sampler_preset SamplerMode )
+{
+    if( !s.bInitialized || !sdleng_InRenderPass() )
+        return;
+
+    BlendMode = composite_NormalizeBlendMode( BlendMode );
+    const shader_resource* pSourceResource = rtarget_GetShaderResource( Source );
+    const rtarget* pCurrentTarget = rtarget_GetCurrentTarget( 0 );
+    if( !pSourceResource || !pCurrentTarget ||
+        !composite_SetTargetViewport( *pCurrentTarget ) )
+        return;
+
+    composite_pipeline_key Key;
+    if( !composite_BuildPipelineKey( Key, BlendMode,
+                                     s.MultiviewPixelShader ) )
+        return;
+    render_pipeline* pPipeline = composite_GetPipeline( Key );
+    if( !pPipeline || !render_BindPipeline( *pPipeline ) )
+        return;
+    if( !composite_BindSource( s.MultiviewPixelShader, "CompositeSource",
+                               pSourceResource, SamplerMode ) ||
+        !composite_BindDefaultParams( s.MultiviewPixelShader, BlendMode,
+                                      Alpha ) )
+        return;
     rdraw_Draw( 3 );
 }
 

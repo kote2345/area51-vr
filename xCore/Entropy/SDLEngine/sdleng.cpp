@@ -13,6 +13,7 @@
 //==============================================================================
 
 #include "sdleng_private.hpp"
+#include <vector>
 
 #ifndef X_STDIO_HPP
 #include "x_stdio.hpp"
@@ -35,6 +36,12 @@ SDL_GPUDevice*  g_pSDLGPUDevice = NULL;
 
 static sdleng_vulkan_device_info s_ExternalVulkanDevice;
 static xbool s_bExternalVulkanDevice = FALSE;
+struct native_xr_texture_cache_entry
+{
+    void* Image;
+    SDL_GPUTexture* Texture;
+};
+static std::vector<native_xr_texture_cache_entry> s_NativeXRTextureCache[2];
 
 xbool sdleng_SetVulkanExternalDevice( const sdleng_vulkan_device_info& Info )
 {
@@ -65,6 +72,12 @@ xbool sdleng_VulkanMultiviewEnabled( void )
     return s_bExternalVulkanDevice && s_ExternalVulkanDevice.MultiviewEnabled;
 }
 
+xbool sdleng_VulkanArraySwapchainEnabled( void )
+{
+    return s_bExternalVulkanDevice &&
+           s_ExternalVulkanDevice.DirectRenderArray;
+}
+
 xbool sdleng_GetVulkanDeviceInfo( sdleng_vulkan_device_info& Info )
 {
     SDL_GPUVulkanDeviceInfo SDLInfo;
@@ -82,6 +95,9 @@ xbool sdleng_GetVulkanDeviceInfo( sdleng_vulkan_device_info& Info )
     Info.RenderWidth       = 0;
     Info.RenderHeight      = 0;
     Info.MultiviewEnabled  = FALSE;
+    Info.DirectRenderEnabled = FALSE;
+    Info.DirectRenderBgra = FALSE;
+    Info.DirectRenderArray = FALSE;
     return TRUE;
 }
 
@@ -122,6 +138,7 @@ static struct sdleng_locals
     SDL_GPURenderPass*          pRenderPass;
     SDL_GPUTexture*             pSwapchainTexture;
     SDL_GPUTexture*             pNativeXRBackBuffers[2];
+    SDL_GPUTexture*             pNativeXRFallbackBackBuffers[2];
     SDL_GPUTextureFormat        SwapchainFormat;
     u32                         BackBufferWidth;
     u32                         BackBufferHeight;
@@ -188,6 +205,60 @@ xbool sdleng_GetVulkanFrameInfoForEye( u32 Eye,
     return TRUE;
 }
 
+xbool sdleng_SetVulkanEyeImage( u32 Eye, void* VkImageHandle )
+{
+    if( !s.bNativeXRBackBuffer || !s_ExternalVulkanDevice.DirectRenderEnabled ||
+        Eye >= 2 || !VkImageHandle || !g_pSDLGPUDevice ||
+        !s.pCommandBuffer || s.pRenderPass )
+        return FALSE;
+
+    std::vector<native_xr_texture_cache_entry>& Cache = s_NativeXRTextureCache[Eye];
+    for( const native_xr_texture_cache_entry& Entry : Cache )
+    {
+        if( Entry.Image == VkImageHandle )
+        {
+            s.pNativeXRBackBuffers[Eye] = Entry.Texture;
+            s.NativeXRSourceImages[Eye] = VkImageHandle;
+            return TRUE;
+        }
+    }
+
+    SDL_PropertiesID Properties = SDL_CreateProperties();
+    if( !Properties || !SDL_SetPointerProperty(
+            Properties, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_IMAGE_POINTER,
+            VkImageHandle ) )
+    {
+        if( Properties ) SDL_DestroyProperties( Properties );
+        return FALSE;
+    }
+    SDL_GPUTextureCreateInfo CreateInfo{};
+    CreateInfo.type = s_ExternalVulkanDevice.DirectRenderArray
+                    ? SDL_GPU_TEXTURETYPE_2D_ARRAY
+                    : SDL_GPU_TEXTURETYPE_2D;
+    CreateInfo.format = s_ExternalVulkanDevice.DirectRenderBgra
+                      ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM
+                      : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    CreateInfo.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    CreateInfo.width = s.NativeXRWidth;
+    CreateInfo.height = s.NativeXRHeight;
+    CreateInfo.layer_count_or_depth =
+        s_ExternalVulkanDevice.DirectRenderArray ? 2 : 1;
+    CreateInfo.num_levels = 1;
+    CreateInfo.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    CreateInfo.props = Properties;
+    SDL_GPUTexture* Texture = SDL_CreateGPUTexture( g_pSDLGPUDevice, &CreateInfo );
+    SDL_DestroyProperties( Properties );
+    if( !Texture )
+    {
+        sdleng_LogError( "SDLEngine", "SDL_CreateGPUTexture(OpenXR image view)" );
+        return FALSE;
+    }
+    Cache.push_back( { VkImageHandle, Texture } );
+    s.pNativeXRBackBuffers[Eye] = Texture;
+    s.NativeXRSourceImages[Eye] = VkImageHandle;
+    return TRUE;
+}
+
 xbool sdleng_SetVulkanRenderEye( u32 Eye )
 {
     if( !s.bNativeXRBackBuffer || Eye >= 2 ||
@@ -203,6 +274,10 @@ xbool sdleng_SetVulkanRenderEye( u32 Eye )
 
     s.NativeXREye       = Eye;
     s.pSwapchainTexture = s.pNativeXRBackBuffers[Eye];
+    if( s_ExternalVulkanDevice.DirectRenderEnabled )
+        s.SwapchainFormat = s_ExternalVulkanDevice.DirectRenderBgra
+                          ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM
+                          : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
     s.AcquiredWidth     = s.NativeXRWidth;
     s.AcquiredHeight    = s.NativeXRHeight;
     s.BackBufferWidth   = s.NativeXRWidth;
@@ -277,6 +352,8 @@ void sdleng_ResetDeviceState( void )
     s.bSwapchainAcquireLogged    = FALSE;
     s.pNativeXRBackBuffers[0]    = NULL;
     s.pNativeXRBackBuffers[1]    = NULL;
+    s.pNativeXRFallbackBackBuffers[0] = NULL;
+    s.pNativeXRFallbackBackBuffers[1] = NULL;
     s.NativeXRSourceImages[0]    = NULL;
     s.NativeXRSourceImages[1]    = NULL;
     s.bNativeXRBackBuffer        = FALSE;
@@ -669,31 +746,39 @@ xbool sdleng_CreateDeviceForWindow( sdleng_native_window_handle hWindow, s32 Wid
                                ? s_ExternalVulkanDevice.RenderHeight : 1024;
         SDL_GPUTextureCreateInfo CreateInfo;
         x_memset( &CreateInfo, 0, sizeof( CreateInfo ) );
-        CreateInfo.type                 = SDL_GPU_TEXTURETYPE_2D;
+        CreateInfo.type                 = s_ExternalVulkanDevice.DirectRenderArray
+                                        ? SDL_GPU_TEXTURETYPE_2D_ARRAY
+                                        : SDL_GPU_TEXTURETYPE_2D;
         CreateInfo.format               = s.SwapchainFormat;
         CreateInfo.usage                = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
         CreateInfo.width                = NativeWidth;
         CreateInfo.height               = NativeHeight;
-        CreateInfo.layer_count_or_depth = 1;
+        CreateInfo.layer_count_or_depth =
+            s_ExternalVulkanDevice.DirectRenderArray ? 2 : 1;
         CreateInfo.num_levels           = 1;
         CreateInfo.sample_count         = SDL_GPU_SAMPLECOUNT_1;
-        for( u32 Eye = 0; Eye < 2; ++Eye )
+        const u32 FallbackCount = s_ExternalVulkanDevice.DirectRenderArray ? 1 : 2;
+        for( u32 Eye = 0; Eye < FallbackCount; ++Eye )
         {
-            s.pNativeXRBackBuffers[Eye] = SDL_CreateGPUTexture( g_pSDLGPUDevice,
-                                                                &CreateInfo );
-            if( !s.pNativeXRBackBuffers[Eye] )
+            s.pNativeXRFallbackBackBuffers[Eye] = SDL_CreateGPUTexture( g_pSDLGPUDevice,
+                                                                        &CreateInfo );
+            if( !s.pNativeXRFallbackBackBuffers[Eye] )
             {
                 sdleng_LogError( "SDLEngine", "SDL_CreateGPUTexture(native XR eye backbuffer)" );
                 sdleng_DestroyDevice();
                 return FALSE;
             }
+            s.pNativeXRBackBuffers[Eye] = s.pNativeXRFallbackBackBuffers[Eye];
         }
+        if( FallbackCount == 1 )
+            s.pNativeXRBackBuffers[1] = s.pNativeXRBackBuffers[0];
         s.bNativeXRBackBuffer = TRUE;
         s.NativeXRWidth       = NativeWidth;
         s.NativeXRHeight      = NativeHeight;
         s.BackBufferWidth     = NativeWidth;
         s.BackBufferHeight    = NativeHeight;
-        x_DebugMsg( "SDLEngine: native OpenXR backbuffer %ux%u\n",
+        x_DebugMsg( "SDLEngine: native OpenXR %s target %ux%u\n",
+                    s_ExternalVulkanDevice.DirectRenderEnabled ? "direct" : "copy",
                     NativeWidth, NativeHeight );
     }
     x_DebugMsg( "SDLEngine: swapchain configured\n" );
@@ -726,12 +811,20 @@ void sdleng_DestroyDevice( void )
     {
         for( u32 Eye = 0; Eye < 2; ++Eye )
         {
-            if( s.pNativeXRBackBuffers[Eye] )
+            for( const native_xr_texture_cache_entry& Entry : s_NativeXRTextureCache[Eye] )
             {
-                SDL_ReleaseGPUTexture( g_pSDLGPUDevice,
-                                       s.pNativeXRBackBuffers[Eye] );
-                s.pNativeXRBackBuffers[Eye] = NULL;
+                if( Entry.Texture )
+                    SDL_ReleaseGPUTexture( g_pSDLGPUDevice, Entry.Texture );
             }
+            s_NativeXRTextureCache[Eye].clear();
+            if( s.pNativeXRFallbackBackBuffers[Eye] &&
+                ((Eye == 0) ||
+                 (s.pNativeXRFallbackBackBuffers[Eye] !=
+                  s.pNativeXRFallbackBackBuffers[Eye - 1])) )
+                SDL_ReleaseGPUTexture( g_pSDLGPUDevice,
+                                       s.pNativeXRFallbackBackBuffers[Eye] );
+            s.pNativeXRBackBuffers[Eye] = NULL;
+            s.pNativeXRFallbackBackBuffers[Eye] = NULL;
         }
         s.bNativeXRBackBuffer = FALSE;
         s.NativeXREye = 0;

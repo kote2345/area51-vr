@@ -427,6 +427,8 @@ xbool sdlrtarget_RefreshBackBufferTarget( void )
 
     s_TargetCache.BackBufferTarget.Desc.Width          = Width;
     s_TargetCache.BackBufferTarget.Desc.Height         = Height;
+    s_TargetCache.BackBufferTarget.Desc.LayerCount     =
+        sdleng_VulkanArraySwapchainEnabled() ? 2 : 1;
     s_TargetCache.BackBufferTarget.Desc.Format         = Format;
     s_TargetCache.BackBufferTarget.Desc.SampleCount    = 1;
     s_TargetCache.BackBufferTarget.Desc.SampleQuality  = 0;
@@ -496,7 +498,9 @@ xbool sdlrtarget_FillColorTargetInfo( const rtarget_color_attachment_desc& Src,
     if( Src.pTarget->bIsDepthTarget )
         return FALSE;
 
-    if( (Src.MipLevel != 0) || (Src.Layer != 0) )
+    if( (Src.MipLevel != 0) ||
+        (Src.Layer >= Src.pTarget->Desc.LayerCount) ||
+        (ViewMask && (Src.Layer != 0)) )
         return FALSE;
 
     if( ViewMask )
@@ -981,6 +985,7 @@ xbool rtarget_BeginBackBufferPass( const rtarget_backbuffer_pass_desc& Desc )
 
     rtarget_color_attachment_desc Color;
     Color.pTarget       = &s_TargetCache.BackBufferTarget;
+    Color.Layer         = Desc.Layer;
     Color.LoadOp        = Desc.ColorLoadOp;
     Color.StoreOp       = Desc.ColorStoreOp;
     Color.ClearColor[0] = Desc.ClearColor[0];
@@ -997,7 +1002,12 @@ xbool rtarget_BeginBackBufferPass( const rtarget_backbuffer_pass_desc& Desc )
     Depth.ClearDepth     = Desc.ClearDepth;
     Depth.ClearStencil   = Desc.ClearStencil;
 
-    if( !rtarget_BeginPass( &Color, 1, Desc.bUseDepth ? &Depth : NULL ) )
+    rtarget_pass_desc Pass;
+    Pass.pColors       = &Color;
+    Pass.ColorCount    = 1;
+    Pass.pDepthStencil = Desc.bUseDepth ? &Depth : NULL;
+    Pass.ViewMask      = Desc.ViewMask;
+    if( !rtarget_BeginPass( Pass ) )
         return FALSE;
 
     sdleng_SetBackBufferViewport();

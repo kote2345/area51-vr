@@ -274,6 +274,10 @@ public:
     xbool           IsInitialized      ( void ) const;
 
     void            RefreshViewport    ( void );
+    void            SetOutputSize      ( s32 Width, s32 Height );
+    void            SetStereoOverlayEnabled( xbool Enabled );
+    void            SetStereoOverlayTarget( const rtarget* pTarget );
+    void            ExecuteFrameUI     ( void );
     void            SetUserScale       ( f32 Scale );
     void            SetHudUserScale    ( f32 Scale );
     ui_viewport const&
@@ -333,7 +337,7 @@ public:
 
     void            BeginFrame         ( void );
     void            Prepare            ( void );
-    void            Execute            ( void );
+    void            Execute            ( xbool KeepPrepared = FALSE );
 
 protected:
     struct DrawConstants
@@ -382,6 +386,8 @@ protected:
     rtarget_format   m_prewarmedFormat;
 
     xbool            m_bPrepared;
+    xbool            m_bStereoOverlay;
+    const rtarget*  m_pStereoOverlayTarget;
     xbool            m_bStagesRegistered;
     xbool            m_isInitialized;
 };

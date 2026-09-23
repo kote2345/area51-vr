@@ -207,7 +207,9 @@ xbool              g_XRFramePrepared    = FALSE;
 xbool              g_XRFrameFailed      = FALSE;
 xbool              g_XRFrameStageRegistered = FALSE;
 xbool              g_XRFrameStereoRendered = FALSE;
+xbool              g_XRFrameShouldRender   = FALSE;
 xbool              g_XRFrameMultiviewRendered = FALSE;
+xbool              g_XRFrameDirectRenderFailed = FALSE;
 s32                g_XRActiveEye       = -1;
 u32                g_XRRenderWidth     = 0;
 u32                g_XRRenderHeight    = 0;
@@ -793,6 +795,9 @@ static xbool InitializeOpenXRBeforeEngine( void )
     SDLDevice.Queue            = XRDevice.Queue;
     SDLDevice.QueueFamilyIndex = XRDevice.QueueFamilyIndex;
     SDLDevice.MultiviewEnabled = XRDevice.MultiviewEnabled;
+    SDLDevice.DirectRenderEnabled = g_XRSession.UsesMutableSrgbImages();
+    SDLDevice.DirectRenderBgra = g_XRSession.UsesBgraSwapchain();
+    SDLDevice.DirectRenderArray = g_XRSession.UsesArraySwapchain();
     g_XRSession.GetRecommendedRenderSize( SDLDevice.RenderWidth,
                                           SDLDevice.RenderHeight );
     if( !sdleng_SetVulkanExternalDevice( SDLDevice ) )
@@ -813,22 +818,68 @@ static void XRStage_BeginFrame( void )
     ++g_XRDebugFrame;
     g_XRFrameStereoRendered = FALSE;
     g_XRFrameMultiviewRendered = FALSE;
+    g_XRFrameShouldRender = FALSE;
+    g_XRFrameDirectRenderFailed = FALSE;
+    g_GBufferMgr.SetTargetOverride( NULL, NULL );
         if( !g_XRGameFrameBridge )
+    {
+        g_GBufferMgr.SetVRResolveOutputEnabled( FALSE );
         return;
+    }
 
     const a51::xr::session_state State = g_XRSession.GetState();
     if( (State != a51::xr::session_state::Ready) &&
         (State != a51::xr::session_state::Running) )
     {
-                return;
+        g_GBufferMgr.SetVRResolveOutputEnabled( FALSE );
+        return;
     }
 
     const xbool bFrameBegun = g_XRSession.BeginFrame();
-        if( !bFrameBegun )
+    if( !bFrameBegun )
     {
         x_DebugMsg( "OpenXR: failed to begin render frame: %s\n",
                     g_XRSession.GetLastError() );
     }
+    g_XRFrameShouldRender = g_XRSession.ShouldRenderFrame();
+    if( !g_XRFrameShouldRender )
+        return;
+
+    /* Every visible OpenXR frame renders into an acquired swapchain image.
+     * Eye zero is the direct target for the flat menu/quad layer; gameplay
+     * switches between the two acquired eye images in RenderGameStereoXR. */
+    void* XRImage = NULL;
+    u32 Width = 0;
+    u32 Height = 0;
+    sdleng_vulkan_frame_info Frame = {};
+    if( !g_XRSession.UsesMutableSrgbImages() ||
+        !sdleng_HasVulkanExternalDevice() ||
+        !g_XRSession.GetAcquiredImage( 0, XRImage ) ||
+        !sdleng_SetVulkanEyeImage( 0, XRImage ) ||
+        !sdleng_SetVulkanRenderEye( 0 ) ||
+        !sdleng_GetVulkanFrameInfoForEye( 0, Frame ) )
+    {
+        g_XRFrameDirectRenderFailed = TRUE;
+        x_DebugMsg( "OpenXR: direct swapchain target setup failed; skipping frame\n" );
+        return;
+    }
+
+    g_GBufferMgr.SetVRResolveOutputEnabled( TRUE );
+    /* Create the depth target in its final two-layer shape before the first
+     * frame resize. This avoids creating a one-layer target and immediately
+     * destroying it when the multiview scene pass starts. */
+    if( g_XRSession.UsesArraySwapchain() )
+        g_GBufferMgr.SetMultiviewEnabled( TRUE );
+    if( !g_GBufferMgr.ResizeGBuffer( Frame.Width, Frame.Height ) )
+    {
+        g_XRFrameDirectRenderFailed = TRUE;
+        x_DebugMsg( "OpenXR: direct depth target setup failed; skipping frame\n" );
+        return;
+    }
+    Width = Frame.Width;
+    Height = Frame.Height;
+    g_XRRenderWidth = Width;
+    g_XRRenderHeight = Height;
 }
 
 static void XRStage_BeforePresent( void )
@@ -845,29 +896,41 @@ static void XRStage_BeforePresent( void )
     if( !g_XRGameFrameBridge || !bXRStateReady )
         return;
 
+    if( !g_XRFrameShouldRender || g_XRFrameDirectRenderFailed )
+    {
+        /* FinishFrame releases any acquired images and submits an empty frame.
+         * Never fall back to rendering/copying the SDL window image. */
+        g_XRFramePrepared = TRUE;
+        return;
+    }
+
     sdleng_vulkan_frame_info SDLFrame = {};
-    sdleng_vulkan_frame_info SDLRightFrame = {};
-    const xbool bStereoFrame = g_XRFrameStereoRendered;
     if( g_XRFrameMultiviewRendered )
     {
         const rtarget* pSceneColor = g_GBufferMgr.GetGBufferTarget( GBufferTarget::FinalColor );
         if( !pSceneColor || (pSceneColor->Desc.LayerCount < 2) ||
-            !sdleng_GetVulkanFrameInfoForTarget( *pSceneColor, SDLFrame ) )
+            !sdleng_GetVulkanFrameInfoForEye( 0, SDLFrame ) )
         {
             g_XRFrameFailed = TRUE;
             return;
         }
+
+        /* Resolve both scene layers in one multiview pass. The composite
+         * pipeline must use the same view mask as this render pass. */
+        rtarget_backbuffer_pass_desc ResolvePass;
+        ResolvePass.ViewMask = 0x3;
+        ResolvePass.bUseDepth = FALSE;
+        ResolvePass.ColorLoadOp = RTARGET_LOAD_DONT_CARE;
+        if( !rtarget_BeginBackBufferPass( ResolvePass ) )
+        {
+            g_XRFrameFailed = TRUE;
+            return;
+        }
+        composite_BlitMultiview( *pSceneColor, COMPOSITE_BLEND_COPY,
+                                 1.0f,
+                                 RSTATE_SAMPLER_PRESET_POINT_CLAMP );
+        rtarget_EndPass();
     }
-    else if( bStereoFrame )
-    {
-        if( !sdleng_GetVulkanFrameInfoForEye( 0, SDLFrame ) ||
-            !sdleng_GetVulkanFrameInfoForEye( 1, SDLRightFrame ) )
-        {
-            x_DebugMsg( "OpenXR: stereo Vulkan frame handles unavailable\n" );
-            g_XRFrameFailed = TRUE;
-            return;
-        }
-            }
     else if( !sdleng_GetVulkanFrameInfo( SDLFrame ) )
     {
         x_DebugMsg( "OpenXR: SDL Vulkan frame handles unavailable\n" );
@@ -881,27 +944,15 @@ static void XRStage_BeforePresent( void )
     XRFrame.Width         = SDLFrame.Width;
     XRFrame.Height        = SDLFrame.Height;
 
-    a51::xr::vulkan_frame_info XRRightFrame;
-    XRRightFrame.CommandBuffer = SDLRightFrame.CommandBuffer;
-    XRRightFrame.SourceImage   = SDLRightFrame.SourceImage;
-    XRRightFrame.Width         = SDLRightFrame.Width;
-    XRRightFrame.Height        = SDLRightFrame.Height;
-
     /* Front-end screens and startup movies are authored as a flat 2D
      * surface. Present them as a world-space quad instead of stretching the
      * UI over the whole projection frustum. Gameplay keeps true stereo. */
-    const xbool bUseQuadLayer = (g_StateMgr.GetState() != SM_PLAYING_GAME);
+    const xbool bUseQuadLayer = !g_XRFrameMultiviewRendered;
     const char* pXRRenderPath = bUseQuadLayer ? "quad"
-                              : g_XRFrameMultiviewRendered ? "multiview-array"
-                              : bStereoFrame ? "stereo-two-eye" : "mono";
+                              : "multiview-array";
         const xbool bPrepared = bUseQuadLayer
                           ? g_XRSession.PrepareQuadFrame( XRFrame )
-                          : g_XRFrameMultiviewRendered
-                          ? g_XRSession.PrepareMultiviewFrame( XRFrame )
-                          : bStereoFrame
-                          ? g_XRSession.PrepareStereoFrame( XRFrame,
-                                                            XRRightFrame )
-                          : g_XRSession.PrepareFrame( XRFrame );
+                          : g_XRSession.PrepareMultiviewFrame( XRFrame );
     if( !bPrepared )
     {
         x_DebugMsg( "OpenXR game frame preparation failed: %s\n",
@@ -1653,48 +1704,6 @@ void RenderGame( void )
 }
 
 #if defined( A51_ENABLE_OPENXR )
-static xbool RenderGameStereoEyeXR( u32 Eye,
-                                    sdleng_vulkan_frame_info& Frame )
-{
-    const xbool bSelected = sdleng_SetVulkanRenderEye( Eye );
-        if( !bSelected )
-    {
-                g_XRActiveEye = -1;
-        return FALSE;
-    }
-
-    const xbool bInfo = sdleng_GetVulkanFrameInfoForEye( Eye, Frame );
-        if( !bInfo )
-    {
-        g_XRActiveEye = -1;
-        return FALSE;
-    }
-
-    g_XRRenderWidth  = Frame.Width;
-    g_XRRenderHeight = Frame.Height;
-    g_XRActiveEye    = static_cast<s32>( Eye );
-
-    /* The normal frame pipeline calls GBufferMgr::BeginFrame once and
-     * presents the scene once from the engine's BeforePresent stage.  VR
-     * renders the game twice inside that one engine frame, so the second eye
-     * would otherwise reuse the first eye's G-buffer/depth state and the
-     * single final blit would only reach whichever eye was selected last. */
-    g_GBufferMgr.BeginFrame();
-        RenderGame();
-
-    /* Finish this eye while its native SDL target is still selected.  The
-     * regular frame-stage present remains enabled for non-VR and performs a
-     * harmless final present of the last eye after both stereo passes. */
-    g_GBufferMgr.PresentFinalColor();
-        rtarget_EndPass();
-
-    sdleng_vulkan_frame_info AfterRender = {};
-    const xbool bAfterInfo = sdleng_GetVulkanFrameInfoForEye( Eye, AfterRender );
-        if( bAfterInfo )
-        Frame = AfterRender;
-    return bAfterInfo;
-}
-
 #if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
 static void A51PerfRecordRenderSample( const char* pMode, f32 RenderMs,
                                        const x_mem_profile_counters& HeapStart,
@@ -1753,7 +1762,9 @@ static void A51PerfRecordRenderSample( const char* pMode, f32 RenderMs,
                 s_A51PerfSamples ? (double)s_A51PerfMallocCalls / s_A51PerfSamples : 0.0,
                 s_A51PerfSamples ? (double)s_A51PerfReallocCalls / s_A51PerfSamples : 0.0,
                 s_A51PerfSamples ? (double)s_A51PerfFreeCalls / s_A51PerfSamples : 0.0 );
+#if defined( A51_ENABLE_HEAP_PROFILE )
     A51PerfLogCpuStages( FALSE );
+#endif
 
     s_A51PerfWindowStart = A51PerfNow;
     s_A51PerfSamples = 0;
@@ -1775,110 +1786,83 @@ static void RenderGameStereoXR( void )
 #endif
     if( !g_XRGameFrameBridge || !sdleng_HasVulkanExternalDevice() )
     {
-        RenderGame();
-#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
-        x_mem_profile_counters A51PerfHeapEnd = {};
-        x_MemGetProfileCounters( A51PerfHeapEnd );
-        A51PerfRecordRenderSample( "legacy", x_TicksToMs( x_GetTime() - A51PerfRenderStart ),
-                                   A51PerfHeapStart, A51PerfHeapEnd );
-#endif
+        g_XRFrameDirectRenderFailed = TRUE;
         return;
     }
 
-    const xbool bGameAllowsMultiview =
-        (g_StateMgr.GetState() == SM_PLAYING_GAME);
-    const xbool bXRAllowsMultiview = g_XRSession.SupportsMultiview();
-    const xbool bSDLEnablesMultiview = sdleng_VulkanMultiviewEnabled();
-    const xbool bGeomAllowsMultiview = g_GeomMgr.SupportsMultiview();
-    const xbool bPrimitiveAllowsMultiview = g_PrimitiveMgr.SupportsMultiview();
-    const xbool bDecalsAllowMultiview = g_DecalRenderer.SupportsMultiview();
-    const xbool bCanMultiview = bGameAllowsMultiview && bXRAllowsMultiview &&
-        bSDLEnablesMultiview && bGeomAllowsMultiview &&
-        bPrimitiveAllowsMultiview && bDecalsAllowMultiview;
-        g_GBufferMgr.SetMultiviewEnabled( bCanMultiview );
+    if( !g_XRFrameShouldRender || g_XRFrameDirectRenderFailed )
+        return;
 
+    const xbool bCanMultiview = g_XRSession.UsesArraySwapchain() &&
+        g_XRSession.SupportsMultiview() &&
+        sdleng_VulkanMultiviewEnabled() &&
+        g_GeomMgr.SupportsMultiview() &&
+        g_PrimitiveMgr.SupportsMultiview() &&
+        g_DecalRenderer.SupportsMultiview();
     if( !bCanMultiview )
     {
-        s32 Width = 0;
-        s32 Height = 0;
-        eng_GetRes( Width, Height );
-        if( Width > 0 && Height > 0 )
-            g_GBufferMgr.ResizeGBuffer( (u32)Width, (u32)Height );
+        x_DebugMsg( "OpenXR: array swapchain requires multiview-capable scene renderers\n" );
+        g_XRFrameDirectRenderFailed = TRUE;
+        return;
     }
 
     if( bCanMultiview )
     {
-        u32 Width = 0;
-        u32 Height = 0;
-        if( !g_XRSession.GetRecommendedRenderSize( Width, Height ) ||
-            !g_GBufferMgr.ResizeGBuffer( Width, Height ) )
+        sdleng_vulkan_frame_info ArrayFrame = {};
+        if( !sdleng_GetVulkanFrameInfoForEye( 0, ArrayFrame ) )
         {
-                        g_GBufferMgr.SetMultiviewEnabled( FALSE );
-            s32 FallbackWidth = 0;
-            s32 FallbackHeight = 0;
-            eng_GetRes( FallbackWidth, FallbackHeight );
-            if( FallbackWidth > 0 && FallbackHeight > 0 )
-                g_GBufferMgr.ResizeGBuffer( (u32)FallbackWidth, (u32)FallbackHeight );
-        }
-        else
-        {
-            g_XRRenderWidth = Width;
-            g_XRRenderHeight = Height;
-            g_XRActiveEye = 2;
-            g_GeomMgr.ClearMultiviewFrameData();
-            g_GBufferMgr.BeginFrame();
-            const rtarget* pFinalColor =
-                g_GBufferMgr.GetGBufferTarget( GBufferTarget::FinalColor );
-                        RenderGame();
-            g_GBufferMgr.EndPass();
-            g_GeomMgr.ClearMultiviewFrameData();
-            g_XRActiveEye = -1;
-            g_XRRenderWidth = 0;
-            g_XRRenderHeight = 0;
-            g_XRFrameStereoRendered = TRUE;
-            g_XRFrameMultiviewRendered = TRUE;
-#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
-            x_mem_profile_counters A51PerfHeapEnd = {};
-            x_MemGetProfileCounters( A51PerfHeapEnd );
-            A51PerfRecordRenderSample( g_GBufferMgr.IsDirectRenderEnabled() ? "direct-multiview" : "multiview",
-                                       x_TicksToMs( x_GetTime() - A51PerfRenderStart ),
-                                       A51PerfHeapStart, A51PerfHeapEnd );
-#endif
+            g_XRFrameDirectRenderFailed = TRUE;
             return;
         }
-    }
 
-    sdleng_vulkan_frame_info LeftFrame = {};
-    sdleng_vulkan_frame_info RightFrame = {};
-    /* Render the eye that was previously healthy first.  If the legacy
-     * renderer leaks first-pass state, this makes the second eye a useful
-     * control: the result tells us whether the black image follows render
-     * order or the eye/swapchain itself. */
-    const xbool bRightRendered = RenderGameStereoEyeXR( 1, RightFrame );
-    if( !bRightRendered )
-    {
+        g_GBufferMgr.SetVRResolveOutputEnabled( TRUE );
+        g_GBufferMgr.SetMultiviewEnabled( TRUE );
+        if( !g_GBufferMgr.ResizeGBuffer( ArrayFrame.Width, ArrayFrame.Height ) )
+        {
+            g_XRFrameDirectRenderFailed = TRUE;
+            return;
+        }
+        const rtarget* pXRColorTarget =
+            g_GBufferMgr.GetGBufferTarget( GBufferTarget::FinalColor );
+        const rtarget* pDepthTarget =
+            g_GBufferMgr.GetGBufferTarget( GBufferTarget::Depth );
+        if( !pXRColorTarget || (pXRColorTarget->Desc.LayerCount != 2) ||
+            !pDepthTarget || (pDepthTarget->Desc.LayerCount != 2) )
+        {
+            g_XRFrameDirectRenderFailed = TRUE;
+            return;
+        }
+        g_GBufferMgr.SetTargetOverride( pXRColorTarget, pDepthTarget );
+        g_XRRenderWidth = ArrayFrame.Width;
+        g_XRRenderHeight = ArrayFrame.Height;
+        g_XRActiveEye = 2;
+        g_UIRenderer.SetOutputSize( (s32)ArrayFrame.Width,
+                                    (s32)ArrayFrame.Height );
+        g_GeomMgr.ClearMultiviewFrameData();
+        g_GBufferMgr.BeginFrame();
         RenderGame();
-        g_XRActiveEye = -1;
-        return;
-    }
+        g_GBufferMgr.EndPass();
+        g_GeomMgr.ClearMultiviewFrameData();
 
-    const xbool bLeftRendered = RenderGameStereoEyeXR( 0, LeftFrame );
-    if( !bLeftRendered )
-    {
+        /* The UI stage runs after g_StateMgr.Render(), when HUD and pause UI
+         * have both populated the draw list. It overlays the SDL scene target
+         * before the final resolve into OpenXR. */
+        g_UIRenderer.SetStereoOverlayTarget( pXRColorTarget );
         g_XRActiveEye = -1;
-        return;
-    }
-
-    g_XRActiveEye = -1;
-    g_XRRenderWidth = 0;
-    g_XRRenderHeight = 0;
-    g_XRFrameStereoRendered = TRUE;
+        g_XRRenderWidth = 0;
+        g_XRRenderHeight = 0;
+        g_XRFrameStereoRendered = TRUE;
+        g_XRFrameMultiviewRendered = TRUE;
 #if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
-    x_mem_profile_counters A51PerfHeapEnd = {};
-    x_MemGetProfileCounters( A51PerfHeapEnd );
-    A51PerfRecordRenderSample( "stereo-fallback", x_TicksToMs( x_GetTime() - A51PerfRenderStart ),
-                               A51PerfHeapStart, A51PerfHeapEnd );
+        x_mem_profile_counters A51PerfHeapEnd = {};
+        x_MemGetProfileCounters( A51PerfHeapEnd );
+        A51PerfRecordRenderSample( "resolve-multiview",
+            x_TicksToMs( x_GetTime() - A51PerfRenderStart ),
+            A51PerfHeapStart, A51PerfHeapEnd );
 #endif
+        return;
+    }
+
     }
 #endif
 

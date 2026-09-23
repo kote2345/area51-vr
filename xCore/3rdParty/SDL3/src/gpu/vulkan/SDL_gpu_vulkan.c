@@ -617,6 +617,7 @@ struct VulkanTexture
     VulkanTextureSubresource *subresources;
 
     bool markedForDestroy; // so that defrag doesn't double-free
+    bool externallyOwnedImage;
     SDL_AtomicInt referenceCount;
 };
 
@@ -3239,7 +3240,7 @@ static void VULKAN_INTERNAL_DestroyTexture(
             NULL);
     }
 
-    if (texture->image) {
+    if (texture->image && !texture->externallyOwnedImage) {
         renderer->vkDestroyImage(
             renderer->logicalDevice,
             texture->image,
@@ -5852,6 +5853,8 @@ static VulkanTexture *VULKAN_INTERNAL_CreateTexture(
     VkImageUsageFlags vkUsageFlags = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     Uint32 layerCount = (createinfo->type == SDL_GPU_TEXTURETYPE_3D) ? 1 : createinfo->layer_count_or_depth;
     Uint32 depth = (createinfo->type == SDL_GPU_TEXTURETYPE_3D) ? createinfo->layer_count_or_depth : 1;
+    VkImage externalImage = (VkImage)SDL_GetPointerProperty(
+        createinfo->props, SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_IMAGE_POINTER, NULL);
 
     VulkanTexture *texture = SDL_calloc(1, sizeof(VulkanTexture));
     texture->swizzle = SwizzleForSDLFormat(createinfo->format);
@@ -5912,6 +5915,10 @@ static VulkanTexture *VULKAN_INTERNAL_CreateTexture(
     imageCreateInfo.pQueueFamilyIndices = NULL;
     imageCreateInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    if (externalImage != VK_NULL_HANDLE) {
+        texture->image = externalImage;
+        texture->externallyOwnedImage = true;
+    } else {
     vulkanResult = renderer->vkCreateImage(
         renderer->logicalDevice,
         &imageCreateInfo,
@@ -5939,6 +5946,7 @@ static VulkanTexture *VULKAN_INTERNAL_CreateTexture(
     }
 
     texture->usedRegion->vulkanTexture = texture; // lol
+    }
 
     if (createinfo->usage & (SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_READ)) {
 
@@ -6255,9 +6263,12 @@ static VulkanTextureSubresource *VULKAN_INTERNAL_PrepareTextureSubresourceForWri
     }
 
     // always do barrier because of layout transitions
-    VULKAN_INTERNAL_TextureSubresourceTransitionFromDefaultUsage(
+    VULKAN_INTERNAL_TextureSubresourceMemoryBarrier(
         renderer,
         commandBuffer,
+        textureSubresource->parent->externallyOwnedImage
+            ? VULKAN_TEXTURE_USAGE_MODE_UNINITIALIZED
+            : VULKAN_INTERNAL_DefaultTextureUsageMode(textureSubresource->parent),
         destinationUsageMode,
         textureSubresource);
 
@@ -7117,7 +7128,7 @@ static SDL_GPUTexture *VULKAN_CreateTexture(
         SDL_CopyProperties(createinfo->props, container->header.info.props);
     }
 
-    container->canBeCycled = true;
+    container->canBeCycled = !texture->externallyOwnedImage;
     container->activeTexture = texture;
     container->textureCapacity = 1;
     container->textureCount = 1;
@@ -7133,6 +7144,9 @@ static SDL_GPUTexture *VULKAN_CreateTexture(
     texture->container = container;
     texture->containerIndex = 0;
 
+    // OpenXR controls the lifetime and layout of external swapchain images.
+    // Their first render pass performs the required transition.
+    if (!texture->externallyOwnedImage) {
     // Let's transition to the default barrier state, because for some reason Vulkan doesn't let us do that with initialLayout.
     // Only do this after "container" is set, so the texture
     // is fully initialized before any Submit that could trigger defrag.
@@ -7150,6 +7164,7 @@ static SDL_GPUTexture *VULKAN_CreateTexture(
             VULKAN_ReleaseTexture((SDL_GPURenderer *)renderer, (SDL_GPUTexture *)container);
             return NULL;
         }
+    }
     }
 
     return (SDL_GPUTexture *)container;

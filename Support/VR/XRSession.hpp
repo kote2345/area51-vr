@@ -84,6 +84,11 @@ public:
     xbool           GetVulkanDeviceInfo( vulkan_device_info& DeviceInfo ) const;
     xbool           SupportsMultiview( void ) const;
     xbool           GetRecommendedRenderSize( u32& Width, u32& Height ) const;
+    xbool           GetAcquiredImage( u32 Eye, void*& Image ) const;
+    xbool           UsesMutableSrgbImages( void ) const;
+    xbool           UsesArraySwapchain( void ) const;
+    xbool           ShouldRenderFrame( void ) const;
+    xbool           UsesBgraSwapchain( void ) const;
 
     xbool           IsRunning       ( void ) const;
     session_state   GetState        ( void ) const;

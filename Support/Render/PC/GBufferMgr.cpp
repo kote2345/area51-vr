@@ -107,6 +107,8 @@ GBufferMgr::GBufferMgr( void )
     : m_isInitialized( FALSE ), m_isGBufferValid( FALSE ), m_areGBufferTargetsActive( FALSE ),
       m_isSceneColorRenderedThisFrame( FALSE ), m_clearGBufferOnBind( FALSE ), m_gBufferWidth( 0 ),
       m_gBufferHeight( 0 ), m_gBufferLayerCount( 1 ), m_multiviewEnabled( FALSE ),
+      m_vrDirectOutputEnabled( FALSE ),
+      m_vrResolveOutputEnabled( FALSE ),
       m_directRenderEnabled(
 #if defined(A51_DIRECT_RENDER)
           TRUE
@@ -220,7 +222,8 @@ xbool GBufferMgr::InitGBuffer( u32 width, u32 height )
     m_gBufferWidth = width;
     m_gBufferHeight = height;
 
-    if ( !CreateTarget( m_sceneColorTarget, GBUFFER_FORMAT_FINAL_COLOR, s_ClearColorZero,
+    if ( (!m_vrDirectOutputEnabled || m_vrResolveOutputEnabled) &&
+         !CreateTarget( m_sceneColorTarget, GBUFFER_FORMAT_FINAL_COLOR, s_ClearColorZero,
                         "Failed to create GBuffer Scene Color target" ) )
     {
         return FALSE;
@@ -265,6 +268,17 @@ xbool GBufferMgr::InitGBuffer( u32 width, u32 height )
     return TRUE;
 }
 
+void GBufferMgr::SetVRResolveOutputEnabled( xbool enabled )
+{
+    if( m_vrResolveOutputEnabled == enabled )
+        return;
+
+    m_vrResolveOutputEnabled = enabled;
+    if( enabled )
+        m_directRenderEnabled = TRUE;
+    DestroyGBuffer();
+}
+
 //==============================================================================
 
 void GBufferMgr::SetDirectRenderEnabled( xbool enabled )
@@ -275,6 +289,20 @@ void GBufferMgr::SetDirectRenderEnabled( xbool enabled )
     }
 
     m_directRenderEnabled = enabled;
+    DestroyGBuffer();
+}
+
+void GBufferMgr::SetVRDirectOutputEnabled( xbool enabled )
+{
+    if( m_vrDirectOutputEnabled == enabled )
+        return;
+
+    m_vrDirectOutputEnabled = enabled;
+#if defined(A51_DIRECT_RENDER)
+    m_directRenderEnabled = TRUE;
+#else
+    m_directRenderEnabled = enabled;
+#endif
     DestroyGBuffer();
 }
 
@@ -584,12 +612,15 @@ xbool GBufferMgr::GetFrameTargets( frame_render_targets& targets ) const
 
 rtarget const* GBufferMgr::GetActiveSceneColor( void ) const
 {
-    return m_pOverrideColor ? m_pOverrideColor : &m_sceneColorTarget;
+    if( m_pOverrideColor )
+        return m_pOverrideColor;
+    return (m_vrDirectOutputEnabled && !m_vrResolveOutputEnabled)
+         ? rtarget_GetBackBuffer() : &m_sceneColorTarget;
 }
 
 //==============================================================================
 
 rtarget const* GBufferMgr::GetActiveDepthTarget( void ) const
 {
-    return m_pOverrideColor ? m_pOverrideDepth : &m_gBufferDepth;
+    return m_pOverrideDepth ? m_pOverrideDepth : &m_gBufferDepth;
 }

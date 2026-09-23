@@ -251,6 +251,8 @@ struct rtarget_pass_desc
 
 struct rtarget_backbuffer_pass_desc
 {
+    u32              Layer;
+    u32              ViewMask;
     rtarget_load_op  ColorLoadOp;
     rtarget_store_op ColorStoreOp;
     f32              ClearColor[4];
@@ -263,6 +265,8 @@ struct rtarget_backbuffer_pass_desc
     u8               ClearStencil;
 
     rtarget_backbuffer_pass_desc( void ) :
+        Layer        ( 0 ),
+        ViewMask     ( 0 ),
         ColorLoadOp  ( RTARGET_LOAD_CLEAR ),
         ColorStoreOp ( RTARGET_STORE_STORE ),
         bUseDepth    ( TRUE ),

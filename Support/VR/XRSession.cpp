@@ -35,6 +35,31 @@ namespace a51::xr
 namespace
 {
 
+#if defined(TARGET_ANDROID)
+void RecordSwapchainWaitMs( f32 WaitMs )
+{
+    static xtick s_WindowStart = 0;
+    static u32   s_Samples = 0;
+    static f32   s_TotalMs = 0.0f;
+    static f32   s_MaxMs = 0.0f;
+    const xtick Now = x_GetTime();
+    if( !s_WindowStart )
+        s_WindowStart = Now;
+    ++s_Samples;
+    s_TotalMs += WaitMs;
+    s_MaxMs = MAX( s_MaxMs, WaitMs );
+    if( x_TicksToMs( Now - s_WindowStart ) < 1000.0f )
+        return;
+    __android_log_print( ANDROID_LOG_INFO, "A51Perf",
+        "xr_swapchain_wait samples=%u avg_ms=%.3f max_ms=%.3f",
+        s_Samples, s_Samples ? s_TotalMs / s_Samples : 0.0f, s_MaxMs );
+    s_WindowStart = Now;
+    s_Samples = 0;
+    s_TotalMs = 0.0f;
+    s_MaxMs = 0.0f;
+}
+#endif
+
 void SetError( char* pError, size_t ErrorSize, const char* pFormat, ... )
 {
     if( !pError || (ErrorSize == 0) )
@@ -181,146 +206,6 @@ XrPosef CentreYawAnchor( const XrView& Left, const XrView& Right )
     return Result;
 }
 
-void RecordGameImageCopy( VkCommandBuffer CommandBuffer,
-                          VkImage SourceImage,
-                          VkImage DestinationImage,
-                          u32 SourceWidth,
-                          u32 SourceHeight,
-                          u32 DestinationWidth,
-                          u32 DestinationHeight,
-                          u32 SourceLayer = 0,
-                          xbool bSourceShaderRead = FALSE,
-                          VkFormat SourceFormat = VK_FORMAT_UNDEFINED,
-                          VkFormat DestinationFormat = VK_FORMAT_UNDEFINED )
-{
-        VkImageMemoryBarrier SourceToTransfer{
-        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    SourceToTransfer.srcAccessMask = bSourceShaderRead ? VK_ACCESS_SHADER_READ_BIT :
-                                                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    SourceToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    SourceToTransfer.oldLayout = bSourceShaderRead ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL :
-                                                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    SourceToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    SourceToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    SourceToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    SourceToTransfer.image = SourceImage;
-    SourceToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    SourceToTransfer.subresourceRange.levelCount = 1;
-    SourceToTransfer.subresourceRange.baseArrayLayer = SourceLayer;
-    SourceToTransfer.subresourceRange.layerCount = 1;
-
-    VkImageMemoryBarrier DestinationToTransfer{
-        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    DestinationToTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    DestinationToTransfer.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    DestinationToTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    DestinationToTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    DestinationToTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    DestinationToTransfer.image = DestinationImage;
-    DestinationToTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    DestinationToTransfer.subresourceRange.levelCount = 1;
-    DestinationToTransfer.subresourceRange.layerCount = 1;
-
-    VkImageMemoryBarrier Barriers[] = {
-        SourceToTransfer,
-        DestinationToTransfer,
-    };
-    vkCmdPipelineBarrier( CommandBuffer,
-                          bSourceShaderRead ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT :
-                                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                          VK_PIPELINE_STAGE_TRANSFER_BIT,
-                          0, 0, NULL, 0, NULL,
-                          static_cast<u32>( ARRAYSIZE( Barriers ) ), Barriers );
-
-    const xbool bSameSize = (SourceWidth == DestinationWidth) &&
-                            (SourceHeight == DestinationHeight);
-    const xbool bMatchingSrgbPair =
-        ((SourceFormat == VK_FORMAT_R8G8B8A8_UNORM) &&
-         (DestinationFormat == VK_FORMAT_R8G8B8A8_SRGB)) ||
-        ((SourceFormat == VK_FORMAT_B8G8R8A8_UNORM) &&
-         (DestinationFormat == VK_FORMAT_B8G8R8A8_SRGB));
-
-    if( bSameSize && bMatchingSrgbPair )
-    {
-        /* The game renders gamma-encoded colors into an UNORM target. A blit
-         * to an sRGB OpenXR image applies another sRGB encode and brightens
-         * the picture. Copying preserves the existing encoded texels; the
-         * OpenXR compositor then decodes them through the sRGB image format. */
-        VkImageCopy Copy{};
-        Copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        Copy.srcSubresource.baseArrayLayer = SourceLayer;
-        Copy.srcSubresource.layerCount = 1;
-        Copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        Copy.dstSubresource.layerCount = 1;
-        Copy.extent.width = SourceWidth;
-        Copy.extent.height = SourceHeight;
-        Copy.extent.depth = 1;
-        vkCmdCopyImage( CommandBuffer, SourceImage,
-                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        DestinationImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        1, &Copy );
-    }
-    else
-    {
-        VkImageBlit Blit{};
-        Blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        Blit.srcSubresource.baseArrayLayer = SourceLayer;
-        Blit.srcSubresource.layerCount = 1;
-        Blit.srcOffsets[1] = {
-            static_cast<s32>( SourceWidth ), static_cast<s32>( SourceHeight ), 1 };
-        Blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        Blit.dstSubresource.layerCount = 1;
-        Blit.dstOffsets[1] = {
-            static_cast<s32>( DestinationWidth ),
-            static_cast<s32>( DestinationHeight ), 1 };
-        vkCmdBlitImage( CommandBuffer, SourceImage,
-                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                        DestinationImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        1, &Blit, VK_FILTER_LINEAR );
-    }
-
-    VkImageMemoryBarrier SourceFromTransfer{
-        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    SourceFromTransfer.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-    SourceFromTransfer.dstAccessMask = bSourceShaderRead ? VK_ACCESS_SHADER_READ_BIT :
-                                                           VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    SourceFromTransfer.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    SourceFromTransfer.newLayout = bSourceShaderRead ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL :
-                                                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    SourceFromTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    SourceFromTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    SourceFromTransfer.image = SourceImage;
-    SourceFromTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    SourceFromTransfer.subresourceRange.levelCount = 1;
-    SourceFromTransfer.subresourceRange.baseArrayLayer = SourceLayer;
-    SourceFromTransfer.subresourceRange.layerCount = 1;
-
-    VkImageMemoryBarrier DestinationFromTransfer{
-        VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
-    DestinationFromTransfer.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    DestinationFromTransfer.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    DestinationFromTransfer.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    DestinationFromTransfer.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    DestinationFromTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    DestinationFromTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    DestinationFromTransfer.image = DestinationImage;
-    DestinationFromTransfer.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    DestinationFromTransfer.subresourceRange.levelCount = 1;
-    DestinationFromTransfer.subresourceRange.layerCount = 1;
-
-    VkImageMemoryBarrier FinalBarriers[] = {
-        SourceFromTransfer,
-        DestinationFromTransfer,
-    };
-    vkCmdPipelineBarrier( CommandBuffer,
-                          VK_PIPELINE_STAGE_TRANSFER_BIT,
-                          bSourceShaderRead ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT :
-                                              VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                          0, 0, NULL, 0, NULL,
-                          static_cast<u32>( ARRAYSIZE( FinalBarriers ) ),
-                          FinalBarriers );
-    }
-
 } // anonymous namespace
 
 struct VulkanSession::Impl
@@ -415,6 +300,8 @@ struct VulkanSession::Impl
     xbool FrameBegun = FALSE;
     xbool ExternalVulkan = FALSE;
     xbool MultiviewEnabled = FALSE;
+    xbool MutableSrgbImages = FALSE;
+    xbool ArraySwapchain = FALSE;
 
     PFN_xrGetVulkanGraphicsRequirements2KHR GetVulkanGraphicsRequirements = NULL;
     PFN_xrGetVulkanGraphicsDevice2KHR GetVulkanGraphicsDevice = NULL;
@@ -1025,8 +912,54 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
         return FALSE;
     }
 
-    m_pImpl->Swapchains.resize( ViewCount );
-    for( u32 ViewIndex = 0; ViewIndex < ViewCount; ++ViewIndex )
+    XrSwapchain ArrayHandle = XR_NULL_HANDLE;
+    const xbool bCanUseArray = m_pImpl->MultiviewEnabled &&
+        (ViewCount == 2) &&
+        (m_pImpl->ViewConfigurationViews[0].recommendedImageRectWidth ==
+         m_pImpl->ViewConfigurationViews[1].recommendedImageRectWidth) &&
+        (m_pImpl->ViewConfigurationViews[0].recommendedImageRectHeight ==
+         m_pImpl->ViewConfigurationViews[1].recommendedImageRectHeight);
+    if( !bCanUseArray )
+    {
+        SetError( m_LastError, sizeof(m_LastError),
+                  "direct OpenXR rendering requires a two-view multiview array swapchain" );
+        Shutdown();
+        m_State = session_state::Failed;
+        return FALSE;
+    }
+    if( bCanUseArray )
+    {
+        XrSwapchainCreateInfo ArrayInfo{ XR_TYPE_SWAPCHAIN_CREATE_INFO };
+        ArrayInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
+                               XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
+        ArrayInfo.format = static_cast<int64_t>( ColorFormat );
+        ArrayInfo.sampleCount = 1;
+        ArrayInfo.width = m_pImpl->ViewConfigurationViews[0].recommendedImageRectWidth;
+        ArrayInfo.height = m_pImpl->ViewConfigurationViews[0].recommendedImageRectHeight;
+        ArrayInfo.faceCount = 1;
+        ArrayInfo.arraySize = ViewCount;
+        ArrayInfo.mipCount = 1;
+        const XrResult ArrayResult = xrCreateSwapchain(
+            m_pImpl->Session, &ArrayInfo, &ArrayHandle );
+        m_pImpl->ArraySwapchain = XR_SUCCEEDED( ArrayResult );
+        x_DebugMsg( "OpenXR direct multiview swapchain: %s (result=%d)\n",
+                    m_pImpl->ArraySwapchain ? "enabled" : "unavailable",
+                    static_cast<int>( ArrayResult ) );
+        if( !m_pImpl->ArraySwapchain )
+        {
+            SetError( m_LastError, sizeof(m_LastError),
+                      "OpenXR rejected the mutable two-layer swapchain (%d)",
+                      static_cast<int>( ArrayResult ) );
+            Shutdown();
+            m_State = session_state::Failed;
+            return FALSE;
+        }
+    }
+
+    m_pImpl->Swapchains.resize( m_pImpl->ArraySwapchain ? 1u : ViewCount );
+    if( m_pImpl->ArraySwapchain )
+        m_pImpl->Swapchains[0].Handle = ArrayHandle;
+    for( u32 ViewIndex = 0; ViewIndex < m_pImpl->Swapchains.size(); ++ViewIndex )
     {
         Impl::Swapchain& Swapchain = m_pImpl->Swapchains[ViewIndex];
         const XrViewConfigurationView& View =
@@ -1037,28 +970,43 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
 
         XrSwapchainCreateInfo SwapchainCreateInfo{
             XR_TYPE_SWAPCHAIN_CREATE_INFO };
-        /* The native renderer copies its finished eye image into the XR
-         * image.  Advertise the transfer destination usage explicitly; it
-         * is required by OpenXR runtimes that validate swapchain usage. */
+        /* Prefer a mutable sRGB image so SDL can render display-ready game
+         * output through its compatible UNORM color attachment view. */
         SwapchainCreateInfo.usageFlags =
             XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT |
-            XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+            XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
         SwapchainCreateInfo.format = static_cast<int64_t>( ColorFormat );
         SwapchainCreateInfo.sampleCount = 1;
         SwapchainCreateInfo.width = Swapchain.Width;
         SwapchainCreateInfo.height = Swapchain.Height;
         SwapchainCreateInfo.faceCount = 1;
-        SwapchainCreateInfo.arraySize = 1;
+        SwapchainCreateInfo.arraySize = m_pImpl->ArraySwapchain ? ViewCount : 1;
         SwapchainCreateInfo.mipCount = 1;
-        if( !CheckXr( xrCreateSwapchain( m_pImpl->Session,
-                                         &SwapchainCreateInfo,
-                                         &Swapchain.Handle ),
-                      "xrCreateSwapchain", m_LastError,
-                      sizeof(m_LastError) ) )
+        XrResult SwapchainResult = m_pImpl->ArraySwapchain ? XR_SUCCESS :
+            xrCreateSwapchain( m_pImpl->Session, &SwapchainCreateInfo,
+                               &Swapchain.Handle );
+        if( XR_SUCCEEDED( SwapchainResult ) )
         {
-            Shutdown();
-            m_State = session_state::Failed;
-            return FALSE;
+            m_pImpl->MutableSrgbImages =
+                (ColorFormat == VK_FORMAT_R8G8B8A8_SRGB) ||
+                (ColorFormat == VK_FORMAT_B8G8R8A8_SRGB);
+        }
+        else
+        {
+            /* A runtime may expose sRGB but reject mutable usage. This keeps
+             * session setup viable; frames are skipped unless direct UNORM
+             * rendering is supported. */
+            SwapchainCreateInfo.usageFlags &= ~XR_SWAPCHAIN_USAGE_MUTABLE_FORMAT_BIT;
+            SwapchainResult = xrCreateSwapchain(
+                m_pImpl->Session, &SwapchainCreateInfo, &Swapchain.Handle );
+            if( !CheckXr( SwapchainResult, "xrCreateSwapchain",
+                          m_LastError, sizeof(m_LastError) ) )
+            {
+                Shutdown();
+                m_State = session_state::Failed;
+                return FALSE;
+            }
+            m_pImpl->MutableSrgbImages = FALSE;
         }
 
         u32 ImageCount = 0;
@@ -1097,12 +1045,14 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
             VkImageViewCreateInfo ImageViewCreateInfo{
                 VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
             ImageViewCreateInfo.image = Swapchain.Images[ImageIndex].image;
-            ImageViewCreateInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            ImageViewCreateInfo.viewType = m_pImpl->ArraySwapchain
+                ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
             ImageViewCreateInfo.format = ColorFormat;
             ImageViewCreateInfo.subresourceRange.aspectMask =
                 VK_IMAGE_ASPECT_COLOR_BIT;
             ImageViewCreateInfo.subresourceRange.levelCount = 1;
-            ImageViewCreateInfo.subresourceRange.layerCount = 1;
+            ImageViewCreateInfo.subresourceRange.layerCount =
+                m_pImpl->ArraySwapchain ? ViewCount : 1;
             if( !CheckVk( vkCreateImageView( m_pImpl->Device,
                                               &ImageViewCreateInfo, NULL,
                                               &Swapchain.ImageViews[ImageIndex] ),
@@ -1163,7 +1113,8 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
                 &Swapchain.ImageViews[ImageIndex];
             FramebufferCreateInfo.width = Swapchain.Width;
             FramebufferCreateInfo.height = Swapchain.Height;
-            FramebufferCreateInfo.layers = 1;
+            FramebufferCreateInfo.layers = m_pImpl->ArraySwapchain
+                                         ? ViewCount : 1;
             if( !CheckVk( vkCreateFramebuffer( m_pImpl->Device,
                                                 &FramebufferCreateInfo, NULL,
                                                 &Swapchain.Framebuffers[ImageIndex] ),
@@ -1475,11 +1426,11 @@ void VulkanSession::CaptureInput( ::input_event_buffer& Events )
         if( !ReadFloat( Action, Current ) )
             return;
 
-        if( x_abs( Current - Previous ) > 0.001f )
-        {
-            Events.Append( Gadget, 0, INPUT_EVENT_ABSOLUTE,
-                           Current, TimeStamp );
-        }
+        /* XR analog values are not raw backend state. The input snapshot is
+         * rebuilt from zero every frame, so publish the held value every
+         * frame instead of only publishing transitions. */
+        Events.Append( Gadget, 0, INPUT_EVENT_ABSOLUTE,
+                       Current, TimeStamp );
 
         const xbool WasDown = Previous >= 0.5f;
         const xbool IsDown = Current >= 0.5f;
@@ -1493,7 +1444,8 @@ void VulkanSession::CaptureInput( ::input_event_buffer& Events )
     };
 
     auto AppendStick = [&]( XrAction Action, f32 Previous[2],
-                            input_gadget XGadget, input_gadget YGadget )
+                            input_gadget XGadget, input_gadget YGadget,
+                            xbool bAllowY )
     {
         XrActionStateGetInfo GetInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
         GetInfo.action = Action;
@@ -1516,20 +1468,21 @@ void VulkanSession::CaptureInput( ::input_event_buffer& Events )
         Current[1] = (Current[1] < -1.0f) ? -1.0f
                     : (Current[1] > 1.0f) ? 1.0f : Current[1];
 
-        if( x_abs( Current[0] - Previous[0] ) > 0.001f )
-            Events.Append( XGadget, 0, INPUT_EVENT_ABSOLUTE,
-                           Current[0], TimeStamp );
-        if( x_abs( Current[1] - Previous[1] ) > 0.001f )
-            Events.Append( YGadget, 0, INPUT_EVENT_ABSOLUTE,
-                           Current[1], TimeStamp );
+        /* The XR action set is sampled independently of the legacy input
+         * backend. Emit both axes every frame so a held stick remains held
+         * in input_snapshot after it is rebuilt for the next frame. */
+        Events.Append( XGadget, 0, INPUT_EVENT_ABSOLUTE,
+                       Current[0], TimeStamp );
+        Events.Append( YGadget, 0, INPUT_EVENT_ABSOLUTE,
+                       bAllowY ? Current[1] : 0.0f, TimeStamp );
         Previous[0] = Current[0];
         Previous[1] = Current[1];
     };
 
     AppendStick( m_pImpl->LeftStickAction, m_pImpl->PreviousLeftStick,
-                 INPUT_XBOX_STICK_LEFT_X, INPUT_XBOX_STICK_LEFT_Y );
+                 INPUT_XBOX_STICK_LEFT_X, INPUT_XBOX_STICK_LEFT_Y, TRUE );
     AppendStick( m_pImpl->RightStickAction, m_pImpl->PreviousRightStick,
-                 INPUT_XBOX_STICK_RIGHT_X, INPUT_XBOX_STICK_RIGHT_Y );
+                 INPUT_XBOX_STICK_RIGHT_X, INPUT_XBOX_STICK_RIGHT_Y, FALSE );
     AppendTrigger( m_pImpl->LeftTriggerAction, m_pImpl->PreviousLeftTrigger,
                    INPUT_XBOX_L_TRIGGER );
     AppendTrigger( m_pImpl->RightTriggerAction, m_pImpl->PreviousRightTrigger,
@@ -1617,6 +1570,52 @@ xbool VulkanSession::GetRecommendedRenderSize( u32& Width, u32& Height ) const
     return (Width > 0) && (Height > 0);
 }
 
+xbool VulkanSession::GetAcquiredImage( u32 Eye, void*& Image ) const
+{
+    Image = NULL;
+    if( !m_pImpl || Eye >= m_pImpl->Views.size() )
+        return FALSE;
+    const u32 SwapchainIndex = m_pImpl->ArraySwapchain ? 0u : Eye;
+    if( SwapchainIndex >= m_pImpl->Swapchains.size() ||
+        SwapchainIndex >= m_pImpl->AcquiredImages.size() ||
+        !m_pImpl->AcquiredImages[SwapchainIndex] )
+        return FALSE;
+    const Impl::Swapchain& Swapchain = m_pImpl->Swapchains[SwapchainIndex];
+    const u32 Index = m_pImpl->AcquiredImageIndices[SwapchainIndex];
+    if( Index >= Swapchain.Images.size() )
+        return FALSE;
+    Image = reinterpret_cast<void*>( Swapchain.Images[Index].image );
+    return Image != NULL;
+}
+
+xbool VulkanSession::UsesMutableSrgbImages( void ) const
+{
+    if( !m_pImpl || m_pImpl->Swapchains.empty() )
+        return FALSE;
+    const VkFormat Format = m_pImpl->Swapchains[0].Format;
+    return m_pImpl->MutableSrgbImages ||
+           (Format == VK_FORMAT_R8G8B8A8_UNORM) ||
+           (Format == VK_FORMAT_B8G8R8A8_UNORM);
+}
+
+xbool VulkanSession::UsesArraySwapchain( void ) const
+{
+    return m_pImpl && m_pImpl->ArraySwapchain;
+}
+
+xbool VulkanSession::ShouldRenderFrame( void ) const
+{
+    return m_pImpl && m_pImpl->FrameBegun &&
+           m_pImpl->PreparedFrameState.shouldRender;
+}
+
+xbool VulkanSession::UsesBgraSwapchain( void ) const
+{
+    return m_pImpl && !m_pImpl->Swapchains.empty() &&
+           (m_pImpl->Swapchains[0].Format == VK_FORMAT_B8G8R8A8_SRGB ||
+            m_pImpl->Swapchains[0].Format == VK_FORMAT_B8G8R8A8_UNORM);
+}
+
 xbool VulkanSession::PrepareFrame( const vulkan_frame_info& FrameInfo )
 {
     return PrepareStereoFrame( FrameInfo, FrameInfo );
@@ -1641,46 +1640,22 @@ xbool VulkanSession::PrepareQuadFrame( const vulkan_frame_info& FrameInfo,
 
     const u32 ViewCount = static_cast<u32>( m_pImpl->Views.size() );
     m_pImpl->ProjectionViews.clear();
-    m_pImpl->AcquiredImageIndices.assign( ViewCount, 0 );
-    m_pImpl->AcquiredImages.assign( ViewCount, FALSE );
 
     if( m_pImpl->PreparedFrameState.shouldRender )
     {
         Impl::Swapchain& Swapchain = m_pImpl->Swapchains[0];
-        XrSwapchainImageAcquireInfo AcquireInfo{
-            XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-        if( !CheckXr( xrAcquireSwapchainImage(
-                          Swapchain.Handle, &AcquireInfo,
-                          &m_pImpl->AcquiredImageIndices[0] ),
-                      "xrAcquireSwapchainImage(quad)", m_LastError,
-                      sizeof(m_LastError) ) )
-        {
-            CancelFrame();
-            return FALSE;
-        }
-        m_pImpl->AcquiredImages[0] = TRUE;
-
-        XrSwapchainImageWaitInfo WaitInfo{
-            XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-        WaitInfo.timeout = XR_INFINITE_DURATION;
-        if( !CheckXr( xrWaitSwapchainImage( Swapchain.Handle, &WaitInfo ),
-                      "xrWaitSwapchainImage(quad)", m_LastError,
-                      sizeof(m_LastError) ) )
-        {
-            CancelFrame();
-            return FALSE;
-        }
-
-        const VkCommandBuffer CommandBuffer = reinterpret_cast<VkCommandBuffer>(
-            FrameInfo.CommandBuffer );
         const VkImage SourceImage = reinterpret_cast<VkImage>(
             FrameInfo.SourceImage );
-        RecordGameImageCopy(
-            CommandBuffer, SourceImage,
-            Swapchain.Images[m_pImpl->AcquiredImageIndices[0]].image,
-            FrameInfo.Width, FrameInfo.Height,
-            Swapchain.Width, Swapchain.Height,
-            0, FALSE, VK_FORMAT_R8G8B8A8_UNORM, Swapchain.Format );
+        const VkImage DestinationImage = Swapchain.Images[
+            m_pImpl->AcquiredImageIndices[0]].image;
+        if( SourceImage != DestinationImage ||
+            FrameInfo.Width != Swapchain.Width ||
+            FrameInfo.Height != Swapchain.Height )
+        {
+            std::snprintf( m_LastError, sizeof(m_LastError),
+                           "quad source is not the acquired OpenXR image" );
+            return FALSE;
+        }
 
         m_pImpl->QuadLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
         m_pImpl->QuadLayer.space = m_pImpl->Space;
@@ -1784,7 +1759,9 @@ xbool VulkanSession::BeginFrame( void )
     }
 
 
-    if( ViewCount != m_pImpl->Swapchains.size() )
+    if( ViewCount != m_pImpl->Views.size() ||
+        m_pImpl->Swapchains.size() !=
+            (m_pImpl->ArraySwapchain ? 1u : ViewCount) )
     {
         SetError( m_LastError, sizeof(m_LastError),
                   "OpenXR returned %u views, expected %u",
@@ -1807,6 +1784,48 @@ xbool VulkanSession::BeginFrame( void )
                                                    m_pImpl->Views[Eye].pose )
                                    : m_pImpl->Views[Eye].pose;
             }
+
+    const u32 SwapchainCount = static_cast<u32>( m_pImpl->Swapchains.size() );
+    m_pImpl->AcquiredImageIndices.assign( SwapchainCount, 0 );
+    m_pImpl->AcquiredImages.assign( SwapchainCount, FALSE );
+    if( m_pImpl->PreparedFrameState.shouldRender )
+    {
+        for( u32 Eye = 0; Eye < SwapchainCount; ++Eye )
+        {
+            Impl::Swapchain& Swapchain = m_pImpl->Swapchains[Eye];
+            XrSwapchainImageAcquireInfo AcquireInfo{
+                XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+            if( !CheckXr( xrAcquireSwapchainImage(
+                              Swapchain.Handle, &AcquireInfo,
+                              &m_pImpl->AcquiredImageIndices[Eye] ),
+                          "xrAcquireSwapchainImage", m_LastError,
+                          sizeof(m_LastError) ) )
+            {
+                CancelFrame();
+                return FALSE;
+            }
+            m_pImpl->AcquiredImages[Eye] = TRUE;
+            XrSwapchainImageWaitInfo WaitInfo{
+                XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+            WaitInfo.timeout = XR_INFINITE_DURATION;
+#if defined(TARGET_ANDROID)
+            const xtick SwapchainWaitStart = x_GetTime();
+#endif
+            if( !CheckXr( xrWaitSwapchainImage( Swapchain.Handle, &WaitInfo ),
+                          "xrWaitSwapchainImage", m_LastError,
+                          sizeof(m_LastError) ) )
+            {
+#if defined(TARGET_ANDROID)
+                RecordSwapchainWaitMs( x_TicksToMs( x_GetTime() - SwapchainWaitStart ) );
+#endif
+                CancelFrame();
+                return FALSE;
+            }
+#if defined(TARGET_ANDROID)
+            RecordSwapchainWaitMs( x_TicksToMs( x_GetTime() - SwapchainWaitStart ) );
+#endif
+        }
+    }
 
     return TRUE;
 }
@@ -1882,26 +1901,24 @@ xbool VulkanSession::PrepareStereoFrameInternal( const vulkan_frame_info& LeftFr
         if( !m_pImpl || !LeftFrame.CommandBuffer || !LeftFrame.SourceImage ||
         !RightFrame.CommandBuffer || !RightFrame.SourceImage ||
         (LeftFrame.CommandBuffer != RightFrame.CommandBuffer) ||
-        (bArraySource && !m_pImpl->MultiviewEnabled) ||
+        (bArraySource && (!m_pImpl->MultiviewEnabled ||
+                          !m_pImpl->ArraySwapchain)) ||
         (bArraySource && ((LeftFrame.Width != RightFrame.Width) ||
                           (LeftFrame.Height != RightFrame.Height))) )
     {
                 return FALSE;
     }
 
-    static VkImage LastLoggedLeftSource  = VK_NULL_HANDLE;
-    static VkImage LastLoggedRightSource = VK_NULL_HANDLE;
     const VkImage CurrentLeftSource = reinterpret_cast<VkImage>( LeftFrame.SourceImage );
     const VkImage CurrentRightSource = reinterpret_cast<VkImage>( RightFrame.SourceImage );
-    if( (CurrentLeftSource != LastLoggedLeftSource) ||
-        (CurrentRightSource != LastLoggedRightSource) )
+    static xbool LoggedStereoSources = FALSE;
+    if( !LoggedStereoSources )
     {
-        x_DebugMsg( "OpenXR stereo inputs: left=%p right=%p command=%p\n",
+        x_DebugMsg( "OpenXR direct stereo targets: left=%p right=%p command=%p\n",
                     reinterpret_cast<void*>( CurrentLeftSource ),
                     reinterpret_cast<void*>( CurrentRightSource ),
                     LeftFrame.CommandBuffer );
-        LastLoggedLeftSource  = CurrentLeftSource;
-        LastLoggedRightSource = CurrentRightSource;
+        LoggedStereoSources = TRUE;
     }
 
     if( !BeginFrame() )
@@ -1916,77 +1933,40 @@ xbool VulkanSession::PrepareStereoFrameInternal( const vulkan_frame_info& LeftFr
     const u32 ViewCount = static_cast<u32>( m_pImpl->Views.size() );
 
     m_pImpl->ProjectionViews.clear();
-    m_pImpl->AcquiredImageIndices.assign( ViewCount, 0 );
-    m_pImpl->AcquiredImages.assign( ViewCount, FALSE );
     if( m_pImpl->PreparedFrameState.shouldRender &&
-        (ViewCount == m_pImpl->Swapchains.size()) )
+        (m_pImpl->Swapchains.size() ==
+            (m_pImpl->ArraySwapchain ? 1u : ViewCount)) )
     {
         m_pImpl->ProjectionViews.resize( ViewCount );
-        const VkCommandBuffer CommandBuffer = reinterpret_cast<VkCommandBuffer>(
-            LeftFrame.CommandBuffer );
-
         for( u32 ViewIndex = 0; ViewIndex < ViewCount; ++ViewIndex )
         {
             const vulkan_frame_info& EyeFrame = (ViewIndex == 0)
                                                ? LeftFrame : RightFrame;
             const VkImage SourceImage = reinterpret_cast<VkImage>(
                 EyeFrame.SourceImage );
-            Impl::Swapchain& Swapchain = m_pImpl->Swapchains[ViewIndex];
-            XrSwapchainImageAcquireInfo AcquireInfo{
-                XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
-            if( !CheckXr( xrAcquireSwapchainImage( Swapchain.Handle,
-                                                   &AcquireInfo,
-                                                   &m_pImpl->AcquiredImageIndices[
-                                                       ViewIndex] ),
-                          "xrAcquireSwapchainImage", m_LastError,
-                          sizeof(m_LastError) ) )
+            const u32 SwapchainIndex = m_pImpl->ArraySwapchain ? 0u : ViewIndex;
+            Impl::Swapchain& Swapchain = m_pImpl->Swapchains[SwapchainIndex];
+            const VkImage DestinationImage = Swapchain.Images[
+                m_pImpl->AcquiredImageIndices[SwapchainIndex]].image;
+            if( SourceImage != DestinationImage ||
+                EyeFrame.Width != Swapchain.Width ||
+                EyeFrame.Height != Swapchain.Height )
             {
-                                CancelFrame();
+                std::snprintf( m_LastError, sizeof(m_LastError),
+                               "stereo source is not the acquired OpenXR image" );
+                m_pImpl->ProjectionViews.clear();
                 return FALSE;
             }
-            m_pImpl->AcquiredImages[ViewIndex] = TRUE;
-
-            XrSwapchainImageWaitInfo WaitInfo{
-                XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-            WaitInfo.timeout = XR_INFINITE_DURATION;
-            if( !CheckXr( xrWaitSwapchainImage( Swapchain.Handle, &WaitInfo ),
-                          "xrWaitSwapchainImage", m_LastError,
-                          sizeof(m_LastError) ) )
-            {
-                                CancelFrame();
-                return FALSE;
-            }
-
-            RecordGameImageCopy(
-                CommandBuffer, SourceImage,
-                Swapchain.Images[m_pImpl->AcquiredImageIndices[ViewIndex]].image,
-                EyeFrame.Width, EyeFrame.Height,
-                Swapchain.Width, Swapchain.Height,
-                bArraySource ? ViewIndex : 0,
-                bArraySource,
-                VK_FORMAT_R8G8B8A8_UNORM, Swapchain.Format );
 
 
             static u32 LoggedStereoHandles = 0;
             if( LoggedStereoHandles < 40 )
             {
-                x_DebugMsg( "OpenXR stereo copy eye %u: source=%p xr=%p size=%ux%u\n",
+                x_DebugMsg( "OpenXR direct eye %u: image=%p size=%ux%u\n",
                             ViewIndex,
                             reinterpret_cast<void*>( EyeFrame.SourceImage ),
-                            reinterpret_cast<void*>( Swapchain.Images[
-                                m_pImpl->AcquiredImageIndices[ViewIndex] ].image ),
                             EyeFrame.Width, EyeFrame.Height );
                 LoggedStereoHandles++;
-            }
-
-            static xbool LoggedCopy[2] = { FALSE, FALSE };
-            if( !LoggedCopy[ViewIndex] )
-            {
-                x_DebugMsg( "OpenXR copy eye %u: source %ux%u -> swapchain %ux%u\n",
-                            ViewIndex,
-                            EyeFrame.Width, EyeFrame.Height,
-                            Swapchain.Width, Swapchain.Height );
-                LoggedCopy[ViewIndex] = TRUE;
             }
 
             m_pImpl->ProjectionViews[ViewIndex] = {
@@ -1997,6 +1977,8 @@ xbool VulkanSession::PrepareStereoFrameInternal( const vulkan_frame_info& LeftFr
                 m_pImpl->Views[ViewIndex].fov;
             m_pImpl->ProjectionViews[ViewIndex].subImage.swapchain =
                 Swapchain.Handle;
+            m_pImpl->ProjectionViews[ViewIndex].subImage.imageArrayIndex =
+                m_pImpl->ArraySwapchain ? ViewIndex : 0;
             m_pImpl->ProjectionViews[ViewIndex].subImage.imageRect.offset = {
                 0, 0 };
             m_pImpl->ProjectionViews[ViewIndex].subImage.imageRect.extent = {

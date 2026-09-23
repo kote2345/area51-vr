@@ -1783,6 +1783,12 @@ typedef struct SDL_GPUTextureCreateInfo
     SDL_PropertiesID props;           /**< A properties ID for extensions. Should be 0 if no extensions are needed. */
 } SDL_GPUTextureCreateInfo;
 
+/* Vulkan-only: when this property is set to a VkImage handle, the Vulkan
+ * backend wraps that externally owned image and creates its own render views.
+ * The image must support the texture format's compatible view format. SDL
+ * never destroys the image. */
+#define SDL_PROP_GPU_TEXTURE_CREATE_VULKAN_IMAGE_POINTER "SDL.gpu.texture.create.vulkan.image"
+
 /**
  * A structure specifying the parameters of a buffer.
  *
