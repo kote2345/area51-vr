@@ -14,6 +14,42 @@
 
 #include "sdleng_private.hpp"
 
+#if defined( A51_ENABLE_HEAP_PROFILE )
+static rdraw_profile_stats s_RDrawProfileStats = {};
+#endif
+
+void rdraw_GetAndResetProfileStats( rdraw_profile_stats& Stats )
+{
+#if defined( A51_ENABLE_HEAP_PROFILE )
+    Stats = s_RDrawProfileStats;
+    s_RDrawProfileStats = {};
+#else
+    Stats = {};
+#endif
+}
+
+xbool rdraw_PushDebugGroup( const char* pName )
+{
+#if defined( A51_ENABLE_HEAP_PROFILE )
+    SDL_GPUCommandBuffer* pCommandBuffer = sdleng_GetCommandBuffer();
+    if( !pCommandBuffer )
+        return FALSE;
+    SDL_PushGPUDebugGroup( pCommandBuffer, pName );
+    return TRUE;
+#else
+    (void)pName;
+    return FALSE;
+#endif
+}
+
+void rdraw_PopDebugGroup( void )
+{
+#if defined( A51_ENABLE_HEAP_PROFILE )
+    if( SDL_GPUCommandBuffer* pCommandBuffer = sdleng_GetCommandBuffer() )
+        SDL_PopGPUDebugGroup( pCommandBuffer );
+#endif
+}
+
 //==============================================================================
 //  RENDER DRAW FUNCTIONS
 //==============================================================================
@@ -121,6 +157,11 @@ xbool rdraw_DrawInstanced( s32 VertexCount, s32 InstanceCount, s32 StartVertex, 
                            (Uint32)InstanceCount,
                            (Uint32)StartVertex,
                            (Uint32)StartInstance );
+#if defined( A51_ENABLE_HEAP_PROFILE )
+    s_RDrawProfileStats.DrawCalls++;
+    s_RDrawProfileStats.SubmittedVertices += (u64)VertexCount * (u64)InstanceCount;
+    s_RDrawProfileStats.SubmittedInstances += (u64)InstanceCount;
+#endif
     const xtick End = bFineTiming ? x_GetTime() : 0;
     if( bFineTiming )
     {
@@ -167,6 +208,12 @@ xbool rdraw_DrawIndexedInstanced( s32 IndexCount,
                                   (Uint32)StartIndex,
                                   (Sint32)BaseVertex,
                                   (Uint32)StartInstance );
+#if defined( A51_ENABLE_HEAP_PROFILE )
+    s_RDrawProfileStats.DrawCalls++;
+    s_RDrawProfileStats.IndexedDrawCalls++;
+    s_RDrawProfileStats.SubmittedIndices += (u64)IndexCount * (u64)InstanceCount;
+    s_RDrawProfileStats.SubmittedInstances += (u64)InstanceCount;
+#endif
     const xtick End = bFineTiming ? x_GetTime() : 0;
     if( bFineTiming )
     {
@@ -211,6 +258,12 @@ xbool rdraw_DrawIndexedIndirect( const rbuffer& Buffer, u32 Offset, u32 DrawCoun
                                           Buffer.pBackend->pBuffer,
                                           Offset,
                                           DrawCount );
+#if defined( A51_ENABLE_HEAP_PROFILE )
+    s_RDrawProfileStats.DrawCalls++;
+    s_RDrawProfileStats.IndexedDrawCalls++;
+    s_RDrawProfileStats.IndirectDrawCalls++;
+    s_RDrawProfileStats.IndirectCommands += DrawCount;
+#endif
     const xtick End = bFineTiming ? x_GetTime() : 0;
     if( bFineTiming )
     {

@@ -85,3 +85,7 @@ a51_add_project( ${A51_GAME_APP_TARGET} ${A51_GAME_APP_TYPE} ${A51_GAME_APP_OPTI
     PRIVATE_INCLUDE_DIRECTORIES
         "${CMAKE_SOURCE_DIR}/xCore/3rdParty/SDL3/include"
 )
+
+if( CMAKE_SYSTEM_NAME STREQUAL "Android" )
+    target_link_libraries( ${A51_GAME_APP_TARGET} PRIVATE android )
+endif()

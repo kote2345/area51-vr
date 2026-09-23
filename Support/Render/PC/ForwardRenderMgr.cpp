@@ -5,10 +5,12 @@
 //=============================================================================
 
 #include "ForwardRenderMgr.hpp"
+#include "VR/A51Perf.hpp"
 
 #include "DecalRenderer.hpp"
 #include "GeomMgr/GeomMgr.hpp"
 #include "PrimitiveMgr/PrimitiveMgr.hpp"
+#include "../GpuTestOptions.hpp"
 
 #include "e_Engine.hpp"
 #include "x_debug.hpp"
@@ -83,6 +85,11 @@ xbool ForwardRenderMgr::QueueGeometry( s32 packetIndex, forward_render_phase pha
         return FALSE;
     }
 
+    if ( gpu_test::DisableDistortion && ( phase == FORWARD_PHASE_DISTORTION ) )
+    {
+        return TRUE;
+    }
+
     DrawItem& item = m_items.Append();
     item.m_source = DrawSource::Geometry;
     item.m_phase = phase;
@@ -141,6 +148,8 @@ xbool ForwardRenderMgr::QueuePrimitives( void )
 
             case render::PRIMITIVE_LAYER_DISTORTION:
             {
+                if ( gpu_test::DisableDistortion )
+                    continue;
                 phase = FORWARD_PHASE_DISTORTION;
             }
             break;
@@ -349,6 +358,7 @@ xbool ForwardRenderMgr::ExecuteItem( DrawItem const& item, frame_render_targets 
 xbool ForwardRenderMgr::ExecutePhaseRange( frame_render_targets const& targets, forward_render_phase firstPhase,
                                            forward_render_phase lastPhase )
 {
+    A51_PERF_SCOPE( RENDER_GEOM_DIRECT, "Render/ForwardPhaseRange" );
     for ( s32 i = 0; i < m_items.GetCount(); ++i )
     {
         DrawItem const& item = m_items[i];
@@ -646,6 +656,7 @@ xbool ForwardRenderMgr::Prepare( frame_render_targets const& targets )
 
 xbool ForwardRenderMgr::ExecutePreEffects( frame_render_targets const& targets )
 {
+    A51_PERF_SCOPE( RENDER_POST_EFFECTS, "Render/ForwardPreEffects" );
     if ( !Prepare( targets ) )
     {
         return FALSE;
@@ -668,6 +679,7 @@ xbool ForwardRenderMgr::ExecutePreEffects( frame_render_targets const& targets )
 
 xbool ForwardRenderMgr::ExecutePostEffects( frame_render_targets const& targets )
 {
+    A51_PERF_SCOPE( RENDER_POST_EFFECTS, "Render/ForwardPostEffects" );
     if ( !m_isPrepared || ( targets.pSceneColor != m_preparedTargets.pSceneColor ) ||
          ( targets.pSceneDepth != m_preparedTargets.pSceneDepth ) || ( targets.pGlow != m_preparedTargets.pGlow ) ||
          ( targets.IsTargetOverride != m_preparedTargets.IsTargetOverride ) )

@@ -9,6 +9,7 @@
 //==============================================================================
 
 #include "PostMgr.hpp"
+#include "../../GpuTestOptions.hpp"
 
 //==============================================================================
 //  GLOBAL INSTANCE
@@ -279,38 +280,39 @@ void PostMgr::EndPostEffects( void )
         pView->GetZLimits( m_postNearZ, m_postFarZ );
     }
 
-    if ( m_Flags.DoZFogCustom || m_Flags.DoZFogFn )
+    if ( !gpu_test::DisableFog && ( m_Flags.DoZFogCustom || m_Flags.DoZFogFn ) )
     {
         ExecuteZFogFilter();
     }
 
-    if ( m_Flags.DoMipCustom || m_Flags.DoMipFn )
+    if ( !gpu_test::DisableMipFilters && ( m_Flags.DoMipCustom || m_Flags.DoMipFn ) )
     {
         ExecuteMipFilter();
     }
 
-    if ( m_Flags.DoMotionBlur )
+    if ( !gpu_test::DisableMotionBlur && m_Flags.DoMotionBlur )
     {
         ExecuteMotionBlur();
     }
 
-    if ( m_Flags.DoSelfIllumGlow )
+    if ( !gpu_test::DisableGlow && m_Flags.DoSelfIllumGlow )
     {
         ExecuteSelfIllumGlow();
         CompositePendingGlow();
     }
 
-    if ( m_Flags.DoRadialBlur || ( m_ScreenWarp.Count > 0 ) )
+    if ( ( !gpu_test::DisableRadialBlur && m_Flags.DoRadialBlur ) ||
+         ( !gpu_test::DisableScreenWarps && ( m_ScreenWarp.Count > 0 ) ) )
     {
         CopyBackBuffer();
     }
 
-    if ( m_Flags.DoRadialBlur )
+    if ( !gpu_test::DisableRadialBlur && m_Flags.DoRadialBlur )
     {
         ExecuteRadialBlur();
     }
 
-    if ( m_ScreenWarp.Count > 0 )
+    if ( !gpu_test::DisableScreenWarps && ( m_ScreenWarp.Count > 0 ) )
     {
         ExecuteScreenWarps();
     }
@@ -321,7 +323,7 @@ void PostMgr::EndPostEffects( void )
         m_FilterResources.ResolvePostChain();
     }
 
-    if ( m_Flags.DoNoise )
+    if ( !gpu_test::DisableNoise && m_Flags.DoNoise )
     {
         ExecuteNoiseFilter();
     }
@@ -335,7 +337,7 @@ void PostMgr::EndPostEffects( void )
 
 void PostMgr::ApplySelfIllumGlows( f32 motionBlurIntensity, s32 glowCutoff )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableGlow )
     {
         return;
     }
@@ -350,7 +352,7 @@ void PostMgr::ApplySelfIllumGlows( f32 motionBlurIntensity, s32 glowCutoff )
 
 void PostMgr::AddScreenWarp( vector3 const& worldPos, f32 radius, f32 warpAmount )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableScreenWarps )
     {
         return;
     }
@@ -372,7 +374,7 @@ void PostMgr::AddScreenWarp( vector3 const& worldPos, f32 radius, f32 warpAmount
 
 void PostMgr::MotionBlur( f32 intensity )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableMotionBlur )
     {
         return;
     }
@@ -386,7 +388,7 @@ void PostMgr::MotionBlur( f32 intensity )
 
 void PostMgr::ZFogFilter( render::post_falloff_fn fn, xcolor color, f32 param1, f32 param2 )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableFog )
     {
         return;
     }
@@ -402,7 +404,7 @@ void PostMgr::ZFogFilter( render::post_falloff_fn fn, xcolor color, f32 param1, 
 
 void PostMgr::ZFogFilter( render::post_falloff_fn fn, s32 paletteIndex )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableFog )
     {
         return;
     }
@@ -425,7 +427,7 @@ void PostMgr::ZFogFilter( render::post_falloff_fn fn, s32 paletteIndex )
 void PostMgr::MipFilter( s32 nFilters, f32 offset, render::post_falloff_fn fn, xcolor color, f32 param1, f32 param2,
                          s32 paletteIndex )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableMipFilters )
     {
         return;
     }
@@ -448,7 +450,7 @@ void PostMgr::MipFilter( s32 nFilters, f32 offset, render::post_falloff_fn fn, x
 void PostMgr::MipFilter( s32 nFilters, f32 offset, render::post_falloff_fn fn, texture::handle const& texture,
                          s32 paletteIndex )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableMipFilters )
     {
         return;
     }
@@ -475,7 +477,7 @@ void PostMgr::MipFilter( s32 nFilters, f32 offset, render::post_falloff_fn fn, t
 
 void PostMgr::NoiseFilter( xcolor color )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableNoise )
     {
         return;
     }
@@ -489,7 +491,7 @@ void PostMgr::NoiseFilter( xcolor color )
 
 void PostMgr::ScreenFade( xcolor color )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableScreenFade )
     {
         return;
     }
@@ -517,7 +519,7 @@ void PostMgr::MultScreen( xcolor multColor, render::post_screen_blend finalBlend
 
 void PostMgr::RadialBlur( f32 zoom, radian angle, f32 alphaSub, f32 alphaScale )
 {
-    if ( !m_isInitialized || m_Flags.Override )
+    if ( !m_isInitialized || m_Flags.Override || gpu_test::DisableRadialBlur )
     {
         return;
     }

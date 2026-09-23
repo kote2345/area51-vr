@@ -652,6 +652,13 @@ class GeomMgr
     xarray<matrix4>                        m_lSkinFrameBones;
     xarray<SkinDrawInstance>               m_lSkinDrawInstances;
     xarray<u32>                            m_lSkinBoneRemaps;
+    struct SkinRemapCacheEntry
+    {
+        s32 MeshHandle;
+        s32 SectionCount;
+        u32 FirstRemap;
+    };
+    xarray<SkinRemapCacheEntry>             m_lSkinRemapCache;
     xarray<rdraw_indexed_indirect_command> m_lSkinIndirectCommands;
     xarray<SkinIndirectRun>                m_lSkinIndirectRuns;
     u32                                    m_skinBatchFirstInstance;

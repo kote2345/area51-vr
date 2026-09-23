@@ -9,6 +9,7 @@ def a51OpenXRLoaderLibrary = project.findProperty('A51_OPENXR_LOADER_LIBRARY') ?
 def a51AndroidConfiguration = project.findProperty('A51_ANDROID_CONFIGURATION') ?: ''
 def a51GBufferLowBw = (project.findProperty('A51_GBUFFER_LOW_BW') ?: 'false').toBoolean()
 def a51DirectRender = (project.findProperty('A51_DIRECT_RENDER') ?: 'false').toBoolean()
+def a51EnableHeapProfile = (project.findProperty('A51_ENABLE_HEAP_PROFILE') ?: 'false').toBoolean()
 
 android {
     namespace = 'com.area51.game'
@@ -32,7 +33,8 @@ android {
                           "-DA51_OPENXR_LOADER_LIBRARY=${a51OpenXRLoaderLibrary}",
                           "-DA51_ANDROID_CONFIGURATION=${a51AndroidConfiguration}",
                           "-DA51_GBUFFER_LOW_BW=${a51GBufferLowBw ? 'ON' : 'OFF'}",
-                          "-DA51_DIRECT_RENDER=${a51DirectRender ? 'ON' : 'OFF'}"
+                          "-DA51_DIRECT_RENDER=${a51DirectRender ? 'ON' : 'OFF'}",
+                          "-DA51_ENABLE_HEAP_PROFILE=${a51EnableHeapProfile ? 'ON' : 'OFF'}"
                 abiFilters 'arm64-v8a'
             }
         }

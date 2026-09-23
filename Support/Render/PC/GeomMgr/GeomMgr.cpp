@@ -17,6 +17,7 @@
 //==============================================================================
 
 #include "GeomMgr.hpp"
+#include "VR/A51Perf.hpp"
 
 #include "../../LightMgr.hpp"
 #include "../../ProjTextureMgr.hpp"
@@ -26,6 +27,7 @@
 #include "../SoftVertexMgr.hpp"
 #include "../GeomStorage.hpp"
 #include "../PostMgr/PostMgr.hpp"
+#include "../../GpuTestOptions.hpp"
 
 //==============================================================================
 //  GLOBAL INSTANCE
@@ -73,13 +75,6 @@ GeomMgr::ShaderBindingLayout::ShaderBindingLayout( void )
 
 namespace
 {
-struct SkinRemapCacheEntry
-{
-    s32 MeshHandle;
-    s32 SectionCount;
-    u32 FirstRemap;
-};
-
 xbool CreateSolidTexture( vram_texture& texture, vram_texture_type type, u32 color, char const* pDebugName )
 {
     vram_texture_desc desc;
@@ -357,6 +352,7 @@ void GeomMgr::Kill( void )
     m_lSkinFrameBones.Clear();
     m_lSkinDrawInstances.Clear();
     m_lSkinBoneRemaps.Clear();
+    m_lSkinRemapCache.Clear();
     m_lSkinIndirectCommands.Clear();
     m_lSkinIndirectRuns.Clear();
     m_lFrameLighting.Clear();
@@ -506,7 +502,16 @@ GeomFrameConstants GeomMgr::BuildFrameConstants( view const& view, material cons
 
     frameData.DistortionNormalMatrix = distortionNormalMatrix;
     frameData.DistortionParams.Set( kDistortionPixelScale, 0.0f, invSceneWidth, invSceneHeight );
-    g_PostMgr.GetGeometryFogConstants( frameData.FogColor, frameData.FogCoeff, frameData.FogParams );
+    if( gpu_test::DisableFog )
+    {
+        frameData.FogColor.Zero();
+        frameData.FogCoeff.Zero();
+        frameData.FogParams.Zero();
+    }
+    else
+    {
+        g_PostMgr.GetGeometryFogConstants( frameData.FogColor, frameData.FogCoeff, frameData.FogParams );
+    }
     return frameData;
 }
 
@@ -1009,6 +1014,7 @@ xbool GeomMgr::BuildPackets( xarray<geometry_draw_item> const& draws,
                              xarray<dynamic_geometry_draw> const& dynamicDraws,
                              cubemap const* pCubeMap )
 {
+    A51_PERF_SCOPE( RENDER_GEOM_BUILD, "Render/GeomBuild" );
     {
         X_PROFILE_SCOPE_CATEGORY( "Renderer", "Geom/ResetPackets" );
         BeginPacketCollection();
@@ -1301,7 +1307,7 @@ xbool GeomMgr::BuildSkinDrawData( void )
     m_lSkinBoneRemaps.SetCount( 0 );
     m_lSkinIndirectCommands.SetCount( 0 );
     m_lSkinIndirectRuns.SetCount( 0 );
-    xarray<SkinRemapCacheEntry> remapCache;
+    m_lSkinRemapCache.SetCount( 0 );
     // G-buffer sorting commonly leaves packets for the same skinned mesh
     // adjacent. Remember the last lookup so those packets avoid scanning the
     // whole per-frame remap cache. The linear search remains the fallback for
@@ -1342,9 +1348,9 @@ xbool GeomMgr::BuildSkinDrawData( void )
         }
         else
         {
-            for ( s32 r = 0; r < remapCache.GetCount(); ++r )
+            for ( s32 r = 0; r < m_lSkinRemapCache.GetCount(); ++r )
             {
-                if ( remapCache[r].MeshHandle == packet.hMesh.Handle )
+                if ( m_lSkinRemapCache[r].MeshHandle == packet.hMesh.Handle )
                 {
                     remapCacheIndex = r;
                     break;
@@ -1355,13 +1361,13 @@ xbool GeomMgr::BuildSkinDrawData( void )
         xbool const bNewRemap = ( remapCacheIndex < 0 );
         if ( bNewRemap )
         {
-            SkinRemapCacheEntry& entry = remapCache.Append();
+            SkinRemapCacheEntry& entry = m_lSkinRemapCache.Append();
             entry.MeshHandle = packet.hMesh.Handle;
             entry.SectionCount = view.SectionCount;
             entry.FirstRemap = m_lSkinBoneRemaps.GetCount();
-            remapCacheIndex = remapCache.GetCount() - 1;
+            remapCacheIndex = m_lSkinRemapCache.GetCount() - 1;
         }
-        else if ( remapCache[remapCacheIndex].SectionCount != view.SectionCount )
+        else if ( m_lSkinRemapCache[remapCacheIndex].SectionCount != view.SectionCount )
         {
             x_DebugMsg( "GeomMgr: skin mesh %d changed section count within a frame\n", packet.hMesh.Handle );
             return FALSE;
@@ -1382,7 +1388,8 @@ xbool GeomMgr::BuildSkinDrawData( void )
                 return FALSE;
             }
 
-            u32 const boneRemapOffset = remapCache[remapCacheIndex].FirstRemap + s * SoftVertexMgr::MAX_BONE_PALETTE;
+            u32 const boneRemapOffset = m_lSkinRemapCache[remapCacheIndex].FirstRemap +
+                                        s * SoftVertexMgr::MAX_BONE_PALETTE;
             if ( bNewRemap )
             {
                 for ( s32 b = 0; b < SoftVertexMgr::MAX_BONE_PALETTE; ++b )
@@ -1841,6 +1848,7 @@ xbool GeomMgr::BuildLightingData( void )
 
 xbool GeomMgr::UploadPackets( void )
 {
+    A51_PERF_SCOPE( RENDER_GEOM_UPLOAD, "Render/GeomUpload" );
     X_PROFILE_SCOPE_CATEGORY( "Renderer", "Geom/UploadPackets" );
 
     static xprofile_counter geomUploadBytes = x_GetProfiler().RegisterCounter( "GeomUploadBytes", "RenderCounter" );
@@ -2196,6 +2204,7 @@ xbool GeomMgr::ExecuteSkinIndirectRun( SkinIndirectRun const& run, geom_pass_des
 
 xbool GeomMgr::ExecuteGBuffer( geom_pass_desc const& pass )
 {
+    A51_PERF_SCOPE( RENDER_GEOM_GBUFFER, "Render/GeomGBuffer" );
     if ( ( pass.TargetWidth == 0 ) || ( pass.TargetHeight == 0 ) )
     {
         x_DebugMsg( "GeomMgr: invalid G-buffer extent %ux%u\n", pass.TargetWidth, pass.TargetHeight );

@@ -37,6 +37,8 @@
 #include "OccluderMgr/OccluderMgr.hpp"
 
 #include "Render/ShadowMapMgr.hpp"
+#include "Render/GpuTestOptions.hpp"
+#include "VR/A51Perf.hpp"
 
 #ifdef X_EDITOR
 extern xbool g_EditorShowNameFlag;
@@ -2223,7 +2225,8 @@ void obj_mgr::RenderSpecialObjects( void )
         // remaining transparent world primitives.
         VERIFY( render::BeginPrimitiveRender() );
 
-        g_TracerMgr.Render();
+        if( !gpu_test::DisableTracers )
+            g_TracerMgr.Render();
 
         if( g_SpecialRenderObj.GetCount() )
         {
@@ -2283,7 +2286,8 @@ void obj_mgr::RenderSpecialObjects( void )
         render::EndPrimitiveRender();
         render::ExecuteForwardRender( render::FORWARD_RENDER_PRE_EFFECTS );
 
-        g_PostEffectMgr.RenderFog();
+        if( !gpu_test::DisableFog )
+            g_PostEffectMgr.RenderFog();
 
         render::ExecuteForwardRender( render::FORWARD_RENDER_POST_EFFECTS );
 
@@ -2424,12 +2428,20 @@ void obj_mgr::Render3dPrep( xbool DoPortalWalk, const view& PortalView, u8 Start
 
     // clear the list of dynamic and character lights so visible light objects can add them back in
     g_LightMgr.ClearLights();
-    CollectVisibleLights();
+    if( !gpu_test::DisableDynamicLights )
+        CollectVisibleLights();
 
     if( g_RenderContext.m_bIsPipRender == 0 )
     {
         CompleteVisibilityTests();
-        g_ShadowMapMgr.CreateShadowMap();
+        if( gpu_test::DisableDynamicShadows )
+        {
+            g_ShadowMapMgr.SetEnabled( FALSE );
+        }
+        else
+        {
+            g_ShadowMapMgr.CreateShadowMap();
+        }
     }
 
     // Clear the list of special render objects;
@@ -2464,7 +2476,10 @@ void obj_mgr::Render3dObjects( xbool bDoPortalWalk, const view& PortalView, u8 S
     LOG_STAT( k_stats_HighLevelRender );
 
     if( g_ZoneMgr.GetPortalCount() == 0 ) bDoPortalWalk = FALSE;
-    Render3dPrep( bDoPortalWalk, PortalView, StartZone );
+    {
+        A51_PERF_SCOPE( RENDER_PREPARE, "Render/Prepare3D" );
+        Render3dPrep( bDoPortalWalk, PortalView, StartZone );
+    }
     {
         // Handle the normal rendering
         if( eng_Begin( "3d Objects" ) )
@@ -2472,6 +2487,7 @@ void obj_mgr::Render3dObjects( xbool bDoPortalWalk, const view& PortalView, u8 S
             VERIFY( render::BeginPrimitiveRender() );
 
             {
+                A51_PERF_SCOPE( RENDER_LIGHTS, "Render/LightCollectBegin" );
                 X_PROFILE_SCOPE_CATEGORY( "RenderSection", "3D/LightBegin" );
                 g_LightMgr.BeginLightCollection();
             }
@@ -2482,6 +2498,7 @@ void obj_mgr::Render3dObjects( xbool bDoPortalWalk, const view& PortalView, u8 S
             }
 
             {
+                A51_PERF_SCOPE( RENDER_COLLECT, "Render/CollectObjects" );
                 X_PROFILE_SCOPE_CATEGORY( "RenderSection", "3D/CollectObjects" );
                 RenderNormalObjects();
             }
@@ -2513,16 +2530,22 @@ void obj_mgr::Render3dObjects( xbool bDoPortalWalk, const view& PortalView, u8 S
 
             if( g_bRenderPlaysurfaces )
             {
+                A51_PERF_SCOPE( RENDER_PLAYSURFACES, "Render/PlaySurfaces" );
                 X_PROFILE_SCOPE_CATEGORY( "RenderSection", "3D/PlaySurfaces" );
                 RenderPlaySurfaces();
             }
 
             {
                 X_PROFILE_SCOPE_CATEGORY( "RenderSection", "3D/Decals" );
-                g_DecalMgr.OnRender();
+                if( !gpu_test::DisableDecals )
+                {
+                    A51_PERF_SCOPE( RENDER_DECALS, "Render/Decals" );
+                    g_DecalMgr.OnRender();
+                }
             }
 
             {
+                A51_PERF_SCOPE( RENDER_LIGHTS, "Render/LightCollectEnd" );
                 X_PROFILE_SCOPE_CATEGORY( "RenderSection", "3D/LightEnd" );
                 g_LightMgr.EndLightCollection();
             }
@@ -2536,6 +2559,7 @@ void obj_mgr::Render3dObjects( xbool bDoPortalWalk, const view& PortalView, u8 S
 #endif
             {
                 LOG_STAT( k_stats_ObjectRender );
+                A51_PERF_SCOPE( RENDER_SUBMIT_GEOMETRY, "Render/SubmitGeometry" );
                 X_PROFILE_SCOPE_CATEGORY( "RenderSection", "3D/EndNormalRender" );
                 render::EndNormalRender();
             }
@@ -2549,6 +2573,7 @@ void obj_mgr::Render3dObjects( xbool bDoPortalWalk, const view& PortalView, u8 S
     }
     {
         LOG_STAT( k_stats_OtherRender );
+        A51_PERF_SCOPE( RENDER_SPECIAL_OBJECTS, "Render/SpecialObjects" );
         RenderSpecialObjects();
     }
 }

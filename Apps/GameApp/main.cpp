@@ -15,8 +15,11 @@
 //==============================================================================
 
 #include "Entropy.hpp"
+#include "xCore/x_files/x_memory.hpp"
+#include "Support/VR/A51Perf.hpp"
 
 #if defined( TARGET_ANDROID )
+#include <android/log.h>
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL_timer.h>
 #endif
@@ -469,11 +472,83 @@ static xbool ShouldAdvanceWorld( void )
 
 //==============================================================================
 
+#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
+#if defined( TARGET_ANDROID )
+#define A51_PERF_LOG(...) __android_log_print( ANDROID_LOG_INFO, "A51Perf", __VA_ARGS__ )
+#else
+#define A51_PERF_LOG(...) x_DebugMsg( __VA_ARGS__ )
+#endif
+#endif
+
+#if defined( A51_ENABLE_HEAP_PROFILE )
+namespace a51::perf
+{
+struct cpu_stage_stats
+{
+    u64   TotalTicks;
+    xtick MaxTicks;
+    u32   Calls;
+};
+
+static cpu_stage_stats s_CpuStageStats[RENDER_STAGE_COUNT] = {};
+
+void RecordCpuStage( cpu_stage Stage, xtick DurationTicks )
+{
+    if( (Stage < 0) || (Stage >= RENDER_STAGE_COUNT) )
+        return;
+
+    cpu_stage_stats& Stats = s_CpuStageStats[Stage];
+    Stats.TotalTicks += static_cast<u64>( DurationTicks );
+    Stats.MaxTicks = MAX( Stats.MaxTicks, DurationTicks );
+    Stats.Calls++;
+}
+} // namespace a51::perf
+
+static void A51PerfLogCpuStages( xbool bSimulation )
+{
+    static const char* s_SimulationNames[] = {
+        "physics", "objects", "aliens", "scripts", "triggers", "network"
+    };
+    static const char* s_RenderNames[] = {
+        "render_game", "objects", "prepare", "collect", "playsurfaces",
+        "decals", "lights", "submit_geom", "special", "geom_build",
+        "geom_upload", "geom_gbuffer", "geom_direct", "post_effects"
+    };
+
+    const s32 First = bSimulation ? a51::perf::SIM_PHYSICS : a51::perf::RENDER_GAME;
+    const s32 Count = bSimulation ? a51::perf::SIM_STAGE_COUNT
+                                  : (a51::perf::RENDER_STAGE_COUNT - a51::perf::RENDER_GAME);
+    const char** pNames = bSimulation ? s_SimulationNames : s_RenderNames;
+    char Details[1200] = {};
+    size_t Used = 0;
+
+    for( s32 i = 0; i < Count; ++i )
+    {
+        const a51::perf::cpu_stage Stage = static_cast<a51::perf::cpu_stage>( First + i );
+        a51::perf::cpu_stage_stats& Stats = a51::perf::s_CpuStageStats[Stage];
+        const f32 AverageMs = Stats.Calls
+            ? x_TicksToMs( static_cast<xtick>( Stats.TotalTicks / Stats.Calls ) ) : 0.0f;
+        const f32 MaximumMs = Stats.Calls ? x_TicksToMs( Stats.MaxTicks ) : 0.0f;
+        const int Written = std::snprintf( Details + Used, sizeof( Details ) - Used,
+                                           "%s%s=%.3f/%.3f/%u",
+                                           i ? " " : "", pNames[i], AverageMs,
+                                           MaximumMs, Stats.Calls );
+        if( (Written > 0) && (static_cast<size_t>( Written ) < sizeof( Details ) - Used) )
+            Used += static_cast<size_t>( Written );
+        Stats = {};
+    }
+
+    A51_PERF_LOG( "cpu_%s %s", bSimulation ? "simulation" : "render", Details );
+}
+#endif
+
 void AdvanceSimulation( f32 DeltaTime )
 {
     X_PROFILE_SCOPE_CATEGORY( "Context", "AdvanceSimulation" );
-#if !defined( X_RETAIL )
+#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
     const xtick A51PerfSimulationStart = x_GetTime();
+    x_mem_profile_counters A51PerfHeapStart = {};
+    x_MemGetProfileCounters( A51PerfHeapStart );
 #endif
 
 
@@ -497,7 +572,10 @@ void AdvanceSimulation( f32 DeltaTime )
         // and or/run out of constraints
         corpse::LimitCount();
 
-        g_PhysicsMgr.Advance( DeltaTime );
+        {
+            A51_PERF_SCOPE( SIM_PHYSICS, "Sim/Physics" );
+            g_PhysicsMgr.Advance( DeltaTime );
+        }
         slot_id const HudSlot = g_ObjMgr.GetFirst( object::TYPE_HUD_OBJECT );
         hud_object* pHud = (HudSlot != SLOT_NULL)
                          ? (hud_object*)g_ObjMgr.GetObjectBySlot( HudSlot )
@@ -507,6 +585,7 @@ void AdvanceSimulation( f32 DeltaTime )
             pHud->BeginIconSnapshot();
         }
         {
+            A51_PERF_SCOPE( SIM_OBJECTS, "Sim/Objects" );
             STAT_LOGGER( temp, k_stats_OnAdvance );
             g_ObjMgr.AdvanceSimulation( DeltaTime );
         }
@@ -514,8 +593,14 @@ void AdvanceSimulation( f32 DeltaTime )
         {
             pHud->CommitIconSnapshot();
         }
-        g_AlienGlobMgr.Advance( DeltaTime );
-        g_ScriptMgr.Update( DeltaTime );
+        {
+            A51_PERF_SCOPE( SIM_ALIENS, "Sim/AlienGlob" );
+            g_AlienGlobMgr.Advance( DeltaTime );
+        }
+        {
+            A51_PERF_SCOPE( SIM_SCRIPTS, "Sim/Scripts" );
+            g_ScriptMgr.Update( DeltaTime );
+        }
     }
 
     if(
@@ -526,19 +611,33 @@ void AdvanceSimulation( f32 DeltaTime )
         ((g_StateMgr.IsPaused() == FALSE) || (g_NetworkMgr.IsOnline() == TRUE))
       )
     {
-        g_TriggerExMgr.OnUpdate( DeltaTime );
+        {
+            A51_PERF_SCOPE( SIM_TRIGGERS, "Sim/Triggers" );
+            g_TriggerExMgr.OnUpdate( DeltaTime );
+        }
     }
 
-    g_NetworkMgr.AdvanceSimulation( DeltaTime );
+    {
+        A51_PERF_SCOPE( SIM_NETWORK, "Sim/Network" );
+        g_NetworkMgr.AdvanceSimulation( DeltaTime );
+    }
 
-#if !defined( X_RETAIL )
+#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
     // Keep profiling logs bounded: one aggregate line per second instead of
     // logging from the simulation loop on every frame.
     static xtick s_A51PerfWindowStart = 0;
     static u32   s_A51PerfSamples    = 0;
     static f32   s_A51PerfTotalMs    = 0.0f;
     static f32   s_A51PerfMaxMs      = 0.0f;
+    static u64   s_A51PerfMallocCalls  = 0;
+    static u64   s_A51PerfReallocCalls = 0;
+    static u64   s_A51PerfFreeCalls    = 0;
     const xtick A51PerfNow = x_GetTime();
+    x_mem_profile_counters A51PerfHeapEnd = {};
+    x_MemGetProfileCounters( A51PerfHeapEnd );
+    s_A51PerfMallocCalls  += A51PerfHeapEnd.MallocCalls  - A51PerfHeapStart.MallocCalls;
+    s_A51PerfReallocCalls += A51PerfHeapEnd.ReallocCalls - A51PerfHeapStart.ReallocCalls;
+    s_A51PerfFreeCalls    += A51PerfHeapEnd.FreeCalls    - A51PerfHeapStart.FreeCalls;
     if( s_A51PerfWindowStart == 0 )
         s_A51PerfWindowStart = A51PerfNow;
     const f32 A51PerfSampleMs = x_TicksToMs( A51PerfNow - A51PerfSimulationStart );
@@ -548,14 +647,23 @@ void AdvanceSimulation( f32 DeltaTime )
     const f32 A51PerfWindowMs = x_TicksToMs( A51PerfNow - s_A51PerfWindowStart );
     if( A51PerfWindowMs >= 1000.0f )
     {
-        x_DebugMsg( "A51Perf simulation samples=%u avg_ms=%.3f max_ms=%.3f\n",
+        A51_PERF_LOG( "simulation samples=%u avg_ms=%.3f max_ms=%.3f heap_avg_per_sample=%.1f/%.1f/%.1f",
                     s_A51PerfSamples,
                     s_A51PerfSamples ? ( s_A51PerfTotalMs / s_A51PerfSamples ) : 0.0f,
-                    s_A51PerfMaxMs );
+                    s_A51PerfMaxMs,
+                    s_A51PerfSamples ? (double)s_A51PerfMallocCalls / s_A51PerfSamples : 0.0,
+                    s_A51PerfSamples ? (double)s_A51PerfReallocCalls / s_A51PerfSamples : 0.0,
+                    s_A51PerfSamples ? (double)s_A51PerfFreeCalls / s_A51PerfSamples : 0.0 );
+#if defined( A51_ENABLE_HEAP_PROFILE )
+        A51PerfLogCpuStages( TRUE );
+#endif
         s_A51PerfWindowStart = A51PerfNow;
         s_A51PerfSamples    = 0;
         s_A51PerfTotalMs    = 0.0f;
         s_A51PerfMaxMs      = 0.0f;
+        s_A51PerfMallocCalls  = 0;
+        s_A51PerfReallocCalls = 0;
+        s_A51PerfFreeCalls    = 0;
     }
 #endif
 }
@@ -1209,6 +1317,7 @@ void RenderGame( void )
 {
     s32 i;
 
+    A51_PERF_SCOPE( RENDER_GAME, "Render/Game" );
     X_PROFILE_SCOPE_CATEGORY( "Context", "Render" );
     LOG_STAT( k_stats_OtherRender );
 
@@ -1524,7 +1633,10 @@ void RenderGame( void )
 
         // render all objects
         xbool DoPortalWalk = TRUE;
-        g_ObjMgr.Render( DoPortalWalk, g_View, PlayerViewZone );
+        {
+            A51_PERF_SCOPE( RENDER_OBJECTS, "Render/ObjectManager" );
+            g_ObjMgr.Render( DoPortalWalk, g_View, PlayerViewZone );
+        }
 
         EndRenderPlatform();
         pPlayers[i]->SetAsActivePlayer( FALSE );
@@ -1583,13 +1695,19 @@ static xbool RenderGameStereoEyeXR( u32 Eye,
     return bAfterInfo;
 }
 
-#if !defined( X_RETAIL )
-static void A51PerfRecordRenderSample( const char* pMode, f32 RenderMs )
+#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
+static void A51PerfRecordRenderSample( const char* pMode, f32 RenderMs,
+                                       const x_mem_profile_counters& HeapStart,
+                                       const x_mem_profile_counters& HeapEnd )
 {
     static xtick s_A51PerfWindowStart = 0;
     static u32   s_A51PerfSamples    = 0;
     static f32   s_A51PerfTotalMs    = 0.0f;
     static f32   s_A51PerfMaxMs      = 0.0f;
+    static u64   s_A51PerfMallocCalls  = 0;
+    static u64   s_A51PerfReallocCalls = 0;
+    static u64   s_A51PerfFreeCalls    = 0;
+    static rdraw_profile_stats s_DrawStats = {};
 
     const xtick A51PerfNow = x_GetTime();
     if( s_A51PerfWindowStart == 0 )
@@ -1598,10 +1716,22 @@ static void A51PerfRecordRenderSample( const char* pMode, f32 RenderMs )
     s_A51PerfSamples++;
     s_A51PerfTotalMs += RenderMs;
     s_A51PerfMaxMs = MAX( s_A51PerfMaxMs, RenderMs );
+    s_A51PerfMallocCalls  += HeapEnd.MallocCalls  - HeapStart.MallocCalls;
+    s_A51PerfReallocCalls += HeapEnd.ReallocCalls - HeapStart.ReallocCalls;
+    s_A51PerfFreeCalls    += HeapEnd.FreeCalls    - HeapStart.FreeCalls;
+    rdraw_profile_stats DrawStats = {};
+    rdraw_GetAndResetProfileStats( DrawStats );
+    s_DrawStats.DrawCalls += DrawStats.DrawCalls;
+    s_DrawStats.IndexedDrawCalls += DrawStats.IndexedDrawCalls;
+    s_DrawStats.IndirectDrawCalls += DrawStats.IndirectDrawCalls;
+    s_DrawStats.IndirectCommands += DrawStats.IndirectCommands;
+    s_DrawStats.SubmittedVertices += DrawStats.SubmittedVertices;
+    s_DrawStats.SubmittedIndices += DrawStats.SubmittedIndices;
+    s_DrawStats.SubmittedInstances += DrawStats.SubmittedInstances;
     if( x_TicksToMs( A51PerfNow - s_A51PerfWindowStart ) < 1000.0f )
         return;
 
-    x_DebugMsg( "A51Perf render mode=%s avg_ms=%.3f max_ms=%.3f packets=%d rigid=%d skin=%d gbuffer_draws=%u instances=%u indices=%llu runs=%u/%u\n",
+    A51_PERF_LOG( "render mode=%s avg_ms=%.3f max_ms=%.3f packets=%d rigid=%d skin=%d gbuffer_draws=%u instances=%u indices=%llu runs=%u/%u api_draws=%llu indexed=%llu indirect=%llu indirect_cmds=%llu verts=%llu indices_submitted=%llu instances_submitted=%llu heap_avg_per_sample=%.1f/%.1f/%.1f",
                 pMode,
                 s_A51PerfSamples ? ( s_A51PerfTotalMs / s_A51PerfSamples ) : 0.0f,
                 s_A51PerfMaxMs,
@@ -1612,25 +1742,45 @@ static void A51PerfRecordRenderSample( const char* pMode, f32 RenderMs )
                 g_GeomMgr.GetGBufferInstanceCount(),
                 static_cast<unsigned long long>( g_GeomMgr.GetGBufferSubmittedIndexCount() ),
                 g_GeomMgr.GetGBufferRigidIndirectRunCount(),
-                g_GeomMgr.GetGBufferSkinIndirectRunCount() );
+                g_GeomMgr.GetGBufferSkinIndirectRunCount(),
+                static_cast<unsigned long long>( s_DrawStats.DrawCalls ),
+                static_cast<unsigned long long>( s_DrawStats.IndexedDrawCalls ),
+                static_cast<unsigned long long>( s_DrawStats.IndirectDrawCalls ),
+                static_cast<unsigned long long>( s_DrawStats.IndirectCommands ),
+                static_cast<unsigned long long>( s_DrawStats.SubmittedVertices ),
+                static_cast<unsigned long long>( s_DrawStats.SubmittedIndices ),
+                static_cast<unsigned long long>( s_DrawStats.SubmittedInstances ),
+                s_A51PerfSamples ? (double)s_A51PerfMallocCalls / s_A51PerfSamples : 0.0,
+                s_A51PerfSamples ? (double)s_A51PerfReallocCalls / s_A51PerfSamples : 0.0,
+                s_A51PerfSamples ? (double)s_A51PerfFreeCalls / s_A51PerfSamples : 0.0 );
+    A51PerfLogCpuStages( FALSE );
 
     s_A51PerfWindowStart = A51PerfNow;
     s_A51PerfSamples = 0;
     s_A51PerfTotalMs = 0.0f;
     s_A51PerfMaxMs = 0.0f;
+    s_A51PerfMallocCalls = 0;
+    s_A51PerfReallocCalls = 0;
+    s_A51PerfFreeCalls = 0;
+    s_DrawStats = {};
 }
 #endif
 
 static void RenderGameStereoXR( void )
 {
-#if !defined( X_RETAIL )
+#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
     const xtick A51PerfRenderStart = x_GetTime();
+    x_mem_profile_counters A51PerfHeapStart = {};
+    x_MemGetProfileCounters( A51PerfHeapStart );
 #endif
     if( !g_XRGameFrameBridge || !sdleng_HasVulkanExternalDevice() )
     {
         RenderGame();
-#if !defined( X_RETAIL )
-        A51PerfRecordRenderSample( "legacy", x_TicksToMs( x_GetTime() - A51PerfRenderStart ) );
+#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
+        x_mem_profile_counters A51PerfHeapEnd = {};
+        x_MemGetProfileCounters( A51PerfHeapEnd );
+        A51PerfRecordRenderSample( "legacy", x_TicksToMs( x_GetTime() - A51PerfRenderStart ),
+                                   A51PerfHeapStart, A51PerfHeapEnd );
 #endif
         return;
     }
@@ -1687,9 +1837,12 @@ static void RenderGameStereoXR( void )
             g_XRRenderHeight = 0;
             g_XRFrameStereoRendered = TRUE;
             g_XRFrameMultiviewRendered = TRUE;
-#if !defined( X_RETAIL )
+#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
+            x_mem_profile_counters A51PerfHeapEnd = {};
+            x_MemGetProfileCounters( A51PerfHeapEnd );
             A51PerfRecordRenderSample( g_GBufferMgr.IsDirectRenderEnabled() ? "direct-multiview" : "multiview",
-                                       x_TicksToMs( x_GetTime() - A51PerfRenderStart ) );
+                                       x_TicksToMs( x_GetTime() - A51PerfRenderStart ),
+                                       A51PerfHeapStart, A51PerfHeapEnd );
 #endif
             return;
         }
@@ -1720,8 +1873,11 @@ static void RenderGameStereoXR( void )
     g_XRRenderWidth = 0;
     g_XRRenderHeight = 0;
     g_XRFrameStereoRendered = TRUE;
-#if !defined( X_RETAIL )
-    A51PerfRecordRenderSample( "stereo-fallback", x_TicksToMs( x_GetTime() - A51PerfRenderStart ) );
+#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
+    x_mem_profile_counters A51PerfHeapEnd = {};
+    x_MemGetProfileCounters( A51PerfHeapEnd );
+    A51PerfRecordRenderSample( "stereo-fallback", x_TicksToMs( x_GetTime() - A51PerfRenderStart ),
+                               A51PerfHeapStart, A51PerfHeapEnd );
 #endif
     }
 #endif

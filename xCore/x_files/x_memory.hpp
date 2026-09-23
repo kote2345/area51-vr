@@ -27,6 +27,15 @@ void*   x_malloc            ( s32   NBytes  );
 void    x_free              ( void* pMemory );
 void*   x_realloc           ( void* pMemory, s32 NewNBytes );
 
+struct x_mem_profile_counters
+{
+    u64 MallocCalls;
+    u64 ReallocCalls;
+    u64 FreeCalls;
+};
+
+void    x_MemGetProfileCounters( x_mem_profile_counters& Counters );
+
 void    x_MemDump           ( void );
 void    x_MemDump           ( const char* pFileName, xbool bCommaSeperated );
 

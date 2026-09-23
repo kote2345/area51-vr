@@ -9,6 +9,7 @@
 //==============================================================================
 
 #include "fx_Mgr.hpp"
+#include "Render/GpuTestOptions.hpp"
 
 #include "x_profile.hpp"
 
@@ -766,6 +767,9 @@ void fx_mgr::AdvanceLogic( fx_handle& Handle, f32 DeltaTime )
 void fx_mgr::Render( const fx_handle& Handle )
 {
     X_PROFILE_SCOPE_CATEGORY( "Context", "fx_mgr::Render" );
+
+    if( gpu_test::DisableFx )
+        return;
 
     if( !Validate( Handle ) )
         return;

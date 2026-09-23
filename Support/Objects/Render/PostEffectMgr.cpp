@@ -3,6 +3,7 @@
 ///////////////////////////////////////////////////////////////////////////
 
 #include "PostEffectMgr.hpp"
+#include "Render/GpuTestOptions.hpp"
 #include "Obj_mgr/obj_mgr.hpp"
 #include "Objects/LevelSettings.hpp"
 #include "Render/Render.hpp"
@@ -146,11 +147,11 @@ void post_effect_mgr::Render( void )
     render::BeginPostEffects();
     
     // do the self-illum glows
-    if ( g_RenderContext.m_bIsMutated )
+    if ( !gpu_test::DisableGlow && g_RenderContext.m_bIsMutated )
     {
         render::ApplySelfIllumGlows( 0.8f, 64 );
     }
-    else
+    else if( !gpu_test::DisableGlow )
     {
         render::ApplySelfIllumGlows( 0.0f, 255 );
     }
@@ -174,14 +175,14 @@ void post_effect_mgr::Render( void )
     }
 
     // handle normal screen blurring
-    if( m_bBackgroundBlurEnabled )
+    if( !gpu_test::DisableMipFilters && m_bBackgroundBlurEnabled )
     {
         // do a very slight depth-of-field to remove some of the sparkles
         render::MipFilter( 2, 0.0f, render::FALLOFF_EXP, xcolor(128,128,128,128), 1.5f, 0.0f, LocalPlayerIndex );
     }
 
     // do the "mutant" vision mode
-    if( g_RenderContext.m_bIsMutated )
+    if( !gpu_test::DisableRadialBlur && g_RenderContext.m_bIsMutated )
     {
         // do a radial blur
         f32    Zoom       = 0.8f;
@@ -191,7 +192,7 @@ void post_effect_mgr::Render( void )
         render::RadialBlur( Zoom, Angle, AlphaSub, AlphaScale );
     }
 
-    if( m_FilmGrainStrength > 0 )
+    if( !gpu_test::DisableNoise && m_FilmGrainStrength > 0 )
     {
         render::NoiseFilter( xcolor( 200, 185, 170, m_FilmGrainStrength ) );
     }

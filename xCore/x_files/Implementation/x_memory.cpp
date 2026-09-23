@@ -64,6 +64,20 @@
 
 #define MAX_MARKS 1024
 
+static u64 s_ProfileMallocCalls  = 0;
+static u64 s_ProfileReallocCalls = 0;
+static u64 s_ProfileFreeCalls    = 0;
+
+#if !defined( X_RETAIL ) || defined( A51_ENABLE_HEAP_PROFILE )
+#define A51_PROFILE_MALLOC()  ( s_ProfileMallocCalls++ )
+#define A51_PROFILE_REALLOC() ( s_ProfileReallocCalls++ )
+#define A51_PROFILE_FREE()    ( s_ProfileFreeCalls++ )
+#else
+#define A51_PROFILE_MALLOC()  ((void)0)
+#define A51_PROFILE_REALLOC() ((void)0)
+#define A51_PROFILE_FREE()    ((void)0)
+#endif
+
 #if defined(USE_OWNER_STACK)
 static const    s32     OWNER_STRING_BUFFER_SIZE    = 16*1024;
 static const    s32     MAX_OWNER_STRINGS           = 1024;
@@ -577,6 +591,7 @@ void* x_debug_malloc( s32         NBytes,
     CurrentBytes += NBytes;
     TotalBytes   += NBytes;
     MaxBytes      = MAX( MaxBytes, CurrentBytes );
+    A51_PROFILE_MALLOC();
     x_EndAtomic();
     static s32 count=0;
     if (count==0)
@@ -657,6 +672,7 @@ void* x_debug_realloc( void* pMemory, s32 NewNBytes, const char* pFileName, s32 
     pHeader->Sequence      = UsingNew ? Sequence : -Sequence;
     Sequence = MAX( Sequence+1, 1 );
 
+    A51_PROFILE_REALLOC();
     x_EndAtomic();
     // Done!
     return( pHeader + 1 );
@@ -709,6 +725,7 @@ void x_debug_free( void* pMemory, const char* pFileName, s32 Line )
 
     // Done!
     sys_mem_free( pHeader );
+    A51_PROFILE_FREE();
     x_EndAtomic();
 }
 
@@ -771,6 +788,7 @@ void* x_malloc( s32 NBytes )
     pHeader->RequestedSize = NBytes;
     pHeader->Sequence      = UsingNew ? Sequence : -Sequence;
     Sequence = MAX( Sequence+1, 1 );
+    A51_PROFILE_MALLOC();
     x_EndAtomic();
     static s32 count=0;
     if (count==0)
@@ -786,6 +804,8 @@ void* x_malloc( s32 NBytes )
 
     x_BeginAtomic();
     void* pMemory = sys_mem_malloc( NBytes );
+    if( pMemory )
+        A51_PROFILE_MALLOC();
     x_EndAtomic();
     return pMemory;
 
@@ -864,6 +884,7 @@ void* x_realloc( void* pMemory, s32 NewNBytes )
     pHeader->Sequence      = UsingNew ? Sequence : -Sequence;
     Sequence = MAX( Sequence+1, 1 );
 
+    A51_PROFILE_REALLOC();
     x_EndAtomic();
     // Done!
     return( pHeader + 1 );
@@ -872,6 +893,8 @@ void* x_realloc( void* pMemory, s32 NewNBytes )
 
     x_BeginAtomic();
     pMemory = sys_mem_realloc( pMemory, NewNBytes );
+    if( pMemory )
+        A51_PROFILE_REALLOC();
     x_EndAtomic();
     return pMemory;
 
@@ -918,12 +941,15 @@ void x_free( void* pMemory )
 
     // Done!
     sys_mem_free( pHeader );
+    A51_PROFILE_FREE();
     x_EndAtomic();
 
 #else // USE_MEM_HEADERS
 
     x_BeginAtomic();
     sys_mem_free( pMemory );
+    if( pMemory )
+        A51_PROFILE_FREE();
     x_EndAtomic();
 
 #endif // USE_MEM_HEADERS
@@ -1574,4 +1600,15 @@ s32 x_MemGetUsed(void)
 {
     // The allocator has no portable system-level usage query.
     return 0;
+}
+
+//==============================================================================
+
+void x_MemGetProfileCounters( x_mem_profile_counters& Counters )
+{
+    x_BeginAtomic();
+    Counters.MallocCalls  = s_ProfileMallocCalls;
+    Counters.ReallocCalls = s_ProfileReallocCalls;
+    Counters.FreeCalls    = s_ProfileFreeCalls;
+    x_EndAtomic();
 }

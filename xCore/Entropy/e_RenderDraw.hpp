@@ -81,6 +81,21 @@ struct rdraw_indexed_indirect_command
     }
 };
 
+struct rdraw_profile_stats
+{
+    u64 DrawCalls;
+    u64 IndexedDrawCalls;
+    u64 IndirectDrawCalls;
+    u64 IndirectCommands;
+    u64 SubmittedVertices;
+    u64 SubmittedIndices;
+    u64 SubmittedInstances;
+};
+
+void                    rdraw_GetAndResetProfileStats( rdraw_profile_stats& Stats );
+xbool                   rdraw_PushDebugGroup( const char* pName );
+void                    rdraw_PopDebugGroup( void );
+
 static_assert( sizeof(rdraw_indexed_indirect_command) == 20,
                "Indexed indirect command layout must match the GPU backend" );
 

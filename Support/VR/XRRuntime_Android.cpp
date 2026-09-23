@@ -110,8 +110,10 @@ xbool PlatformCreateInstance( const runtime_create_info& Info,
                 {
                     Extensions.push_back(
                         XR_FB_DISPLAY_REFRESH_RATE_EXTENSION_NAME );
-                    break;
                 }
+                if( std::strcmp( Extension.extensionName,
+                                 XR_META_PERFORMANCE_METRICS_EXTENSION_NAME ) == 0 )
+                    Extensions.push_back( XR_META_PERFORMANCE_METRICS_EXTENSION_NAME );
             }
         }
     }

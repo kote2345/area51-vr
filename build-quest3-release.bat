@@ -27,7 +27,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
 if errorlevel 1 goto :restore
 
 pushd "%ANDROID_DIR%"
-call "%GRADLE%" :app:assembleRelease --no-daemon -PA51_ENABLE_OPENXR=true
+call "%GRADLE%" :app:assembleRelease --no-daemon -PA51_ENABLE_OPENXR=true -PA51_ENABLE_HEAP_PROFILE=true
 set "BUILD_EXIT=%ERRORLEVEL%"
 popd
 

@@ -91,6 +91,7 @@ option( A51_ENABLE_QT "Enable Qt integration for XBMPViewer when Qt6 is availabl
 option( A51_EXPORT_COMPILE_COMMANDS "Generate compile_commands.json for tooling" ON )
 option( A51_BUILD_DXC "Build the bundled DXC host compiler from source" ON )
 option( A51_ENABLE_OPENXR "Enable the common OpenXR runtime layer" OFF )
+option( A51_ENABLE_HEAP_PROFILE "Enable low frequency heap profiling in retail builds" OFF )
 option( A51_GBUFFER_LOW_BW "Use RGBA8 auxiliary G-buffer targets to reduce mobile GPU bandwidth" OFF )
 option( A51_DIRECT_RENDER "Use the direct color/depth render path without auxiliary G-buffer targets" OFF )
 set( A51_OPENXR_HEADERS_DIR "" CACHE PATH
@@ -116,6 +117,11 @@ target_compile_features( a51_build_options INTERFACE cxx_std_17 )
 if( A51_ENABLE_OPENXR )
     target_compile_definitions( a51_build_options INTERFACE
         A51_ENABLE_OPENXR=1
+    )
+endif()
+if( A51_ENABLE_HEAP_PROFILE )
+    target_compile_definitions( a51_build_options INTERFACE
+        A51_ENABLE_HEAP_PROFILE=1
     )
 endif()
 if( A51_GBUFFER_LOW_BW )

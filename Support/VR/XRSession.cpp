@@ -24,6 +24,10 @@
 #include <cstdio>
 #include <cmath>
 #include <vector>
+#if defined(TARGET_ANDROID)
+#include <android/log.h>
+#include "x_time.hpp"
+#endif
 
 namespace a51::xr
 {
@@ -288,6 +292,18 @@ void RecordGameImageCopy( VkCommandBuffer CommandBuffer,
 
 struct VulkanSession::Impl
 {
+#if defined(TARGET_ANDROID)
+    struct PerformanceCounter
+    {
+        XrPath Path;
+        char   Name[96];
+    };
+    PFN_xrEnumeratePerformanceMetricsCounterPathsMETA EnumeratePerformanceCounters = NULL;
+    PFN_xrSetPerformanceMetricsStateMETA SetPerformanceMetricsState = NULL;
+    PFN_xrQueryPerformanceMetricsCounterMETA QueryPerformanceCounter = NULL;
+    std::vector<PerformanceCounter> PerformanceCounters;
+    xtick LastPerformanceLog = 0;
+#endif
     struct Swapchain
     {
         XrSwapchain Handle = XR_NULL_HANDLE;
@@ -666,6 +682,52 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
     }
 
 #if defined(TARGET_ANDROID)
+    // Quest exposes app/compositor timing, utilization, frequencies and other
+    // counters through META_performance_metrics. Probe each entry point so an
+    // unsupported runtime continues without changing session startup.
+    PFN_xrVoidFunction PerfFunction = NULL;
+    if( XR_SUCCEEDED( xrGetInstanceProcAddr( m_pImpl->Instance,
+            "xrEnumeratePerformanceMetricsCounterPathsMETA", &PerfFunction ) ) && PerfFunction )
+        m_pImpl->EnumeratePerformanceCounters = reinterpret_cast<PFN_xrEnumeratePerformanceMetricsCounterPathsMETA>( PerfFunction );
+    PerfFunction = NULL;
+    if( XR_SUCCEEDED( xrGetInstanceProcAddr( m_pImpl->Instance,
+            "xrSetPerformanceMetricsStateMETA", &PerfFunction ) ) && PerfFunction )
+        m_pImpl->SetPerformanceMetricsState = reinterpret_cast<PFN_xrSetPerformanceMetricsStateMETA>( PerfFunction );
+    PerfFunction = NULL;
+    if( XR_SUCCEEDED( xrGetInstanceProcAddr( m_pImpl->Instance,
+            "xrQueryPerformanceMetricsCounterMETA", &PerfFunction ) ) && PerfFunction )
+        m_pImpl->QueryPerformanceCounter = reinterpret_cast<PFN_xrQueryPerformanceMetricsCounterMETA>( PerfFunction );
+
+    if( m_pImpl->EnumeratePerformanceCounters && m_pImpl->SetPerformanceMetricsState &&
+        m_pImpl->QueryPerformanceCounter )
+    {
+        XrPerformanceMetricsStateMETA MetricsState{ XR_TYPE_PERFORMANCE_METRICS_STATE_META };
+        MetricsState.enabled = XR_TRUE;
+        if( XR_SUCCEEDED( m_pImpl->SetPerformanceMetricsState( m_pImpl->Session, &MetricsState ) ) )
+        {
+            uint32_t CounterCount = 0;
+            if( XR_SUCCEEDED( m_pImpl->EnumeratePerformanceCounters( m_pImpl->Instance, 0, &CounterCount, NULL ) ) && CounterCount )
+            {
+                std::vector<XrPath> Paths( CounterCount );
+                if( XR_SUCCEEDED( m_pImpl->EnumeratePerformanceCounters( m_pImpl->Instance, CounterCount, &CounterCount, Paths.data() ) ) )
+                {
+                    m_pImpl->PerformanceCounters.reserve( CounterCount );
+                    for( XrPath Path : Paths )
+                    {
+                        Impl::PerformanceCounter Counter{};
+                        Counter.Path = Path;
+                        uint32_t NameLength = 0;
+                        if( XR_SUCCEEDED( xrPathToString( m_pImpl->Instance, Path, sizeof(Counter.Name), &NameLength, Counter.Name ) ) )
+                            m_pImpl->PerformanceCounters.push_back( Counter );
+                    }
+                }
+            }
+            __android_log_print( ANDROID_LOG_INFO, "A51Perf", "runtime metrics enabled counters=%u", (unsigned)m_pImpl->PerformanceCounters.size() );
+        }
+    }
+    else
+        __android_log_print( ANDROID_LOG_INFO, "A51Perf", "runtime metrics extension unavailable" );
+
     // Resolve the optional Quest extension. Do not gate the 72 Hz request on
     // xrEnumerateDisplayRefreshRatesFB: Meta documents that list as deprecated
     // and permits requests for supported rates it does not enumerate.
@@ -1644,6 +1706,34 @@ xbool VulkanSession::BeginFrame( void )
     }
     m_pImpl->FrameBegun = TRUE;
 
+#if defined(TARGET_ANDROID)
+    if( m_pImpl->QueryPerformanceCounter && !m_pImpl->PerformanceCounters.empty() )
+    {
+        const xtick Now = x_GetTime();
+        if( !m_pImpl->LastPerformanceLog || x_TicksToMs( Now - m_pImpl->LastPerformanceLog ) >= 1000.0f )
+        {
+            char Metrics[1800] = {};
+            size_t Used = 0;
+            for( const Impl::PerformanceCounter& Counter : m_pImpl->PerformanceCounters )
+            {
+                XrPerformanceMetricsCounterMETA Value{ XR_TYPE_PERFORMANCE_METRICS_COUNTER_META };
+                if( XR_FAILED( m_pImpl->QueryPerformanceCounter( m_pImpl->Session, Counter.Path, &Value ) ) ||
+                    !(Value.counterFlags & XR_PERFORMANCE_METRICS_COUNTER_ANY_VALUE_VALID_BIT_META) )
+                    continue;
+                const double Number = (Value.counterFlags & XR_PERFORMANCE_METRICS_COUNTER_FLOAT_VALUE_VALID_BIT_META)
+                                    ? Value.floatValue : static_cast<double>( Value.uintValue );
+                const int Written = std::snprintf( Metrics + Used, sizeof(Metrics) - Used,
+                    "%s%s=%.3f", Used ? " " : "", Counter.Name, Number );
+                if( Written <= 0 || static_cast<size_t>( Written ) >= sizeof(Metrics) - Used )
+                    break;
+                Used += static_cast<size_t>( Written );
+            }
+            __android_log_print( ANDROID_LOG_INFO, "A51Perf", "runtime %s", Used ? Metrics : "counter query returned no values" );
+            m_pImpl->LastPerformanceLog = Now;
+        }
+    }
+#endif
+
     u32 ViewCount = 0;
     XrViewLocateInfo ViewLocateInfo{ XR_TYPE_VIEW_LOCATE_INFO };
     ViewLocateInfo.viewConfigurationType = m_pImpl->ViewConfigurationType;
@@ -1899,18 +1989,10 @@ xbool VulkanSession::FinishFrame( void )
         if( !m_pImpl || !m_pImpl->FrameBegun )
         return TRUE;
 
-    // SDL submits the game command buffer before this function is called.
-    // Waiting here makes the OpenXR release/end-frame ordering explicit.
-    const VkResult QueueIdleResult = m_pImpl->Queue
-                                   ? vkQueueWaitIdle( m_pImpl->Queue )
-                                   : VK_ERROR_INITIALIZATION_FAILED;
-        if( !CheckVk( QueueIdleResult, "vkQueueWaitIdle before swapchain release",
-                  m_LastError, sizeof(m_LastError) ) )
-    {
-        CancelFrame();
-        return FALSE;
-    }
-
+    // SDL has submitted rendering to the Vulkan queue bound to this OpenXR
+    // session. OpenXR owns synchronization when a released swapchain image is
+    // still referenced by submitted Vulkan work; a host queue-idle here stalls
+    // the CPU every frame and removes CPU/GPU overlap.
     for( u32 i = 0; i < m_pImpl->Swapchains.size(); ++i )
     {
         if( (i < m_pImpl->AcquiredImages.size()) &&

@@ -9,6 +9,7 @@
 //=========================================================================
 
 #include "ProjTextureMgr.hpp"
+#include "Render/GpuTestOptions.hpp"
 
 //=========================================================================
 //  GLOBAL INSTANCE
@@ -166,6 +167,9 @@ xbool ProjTextureMgr::AnyProjectionIntersectsBBox( Projection const* pProjection
 void ProjTextureMgr::AddProjLight( matrix4 const& LocalToWorld, radian FieldOfView, f32 Length,
                                    texture::handle Texture )
 {
+    if( gpu_test::DisableProjectedLights )
+        return;
+
     AddProjection( m_LightProjections, m_LightProjectionCount, MaxLightProjectionCount,
                    LocalToWorld, FieldOfView, Length, Texture );
 }
@@ -175,6 +179,9 @@ void ProjTextureMgr::AddProjLight( matrix4 const& LocalToWorld, radian FieldOfVi
 void ProjTextureMgr::AddProjShadow( matrix4 const& LocalToWorld, radian FieldOfView, f32 Length,
                                     texture::handle Texture )
 {
+    if( gpu_test::DisableProjectedShadows )
+        return;
+
     AddProjection( m_ShadowProjections, m_ShadowProjectionCount, MaxShadowProjectionCount,
                    LocalToWorld, FieldOfView, Length, Texture );
 }
@@ -240,13 +247,13 @@ u32 ProjTextureMgr::CollectProjectionFlags( u32 RenderFlags, bbox const& WorldBB
         return ProjectionFlags;
     }
 
-    if( !( RenderFlags & render::DISABLE_SPOTLIGHT ) &&
+    if( !gpu_test::DisableProjectedLights && !( RenderFlags & render::DISABLE_SPOTLIGHT ) &&
         AnyProjectionIntersectsBBox( m_LightProjections, m_LightProjectionCount, WorldBBox ) )
     {
         ProjectionFlags |= render::INSTFLAG_SPOTLIGHT;
     }
 
-    if( !( RenderFlags & render::DISABLE_PROJ_SHADOWS ) &&
+    if( !gpu_test::DisableProjectedShadows && !( RenderFlags & render::DISABLE_PROJ_SHADOWS ) &&
         AnyProjectionIntersectsBBox( m_ShadowProjections, m_ShadowProjectionCount, WorldBBox ) )
     {
         ProjectionFlags |= render::INSTFLAG_PROJ_SHADOW;
