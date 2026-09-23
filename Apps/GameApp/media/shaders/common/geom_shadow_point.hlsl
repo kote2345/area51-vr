@@ -24,7 +24,6 @@ float ComputePointShadowFaceAlignment( uint sourceIndex, float3 lightDir )
 
 float SamplePointShadowLight( uint lightIndex,
                               float3 worldPos,
-                              float3 worldNormal,
                               float3 geometricNormal )
 {
     const float4 lightPosRadius  = GetPointShadowLightPosRadius( lightIndex );
@@ -67,11 +66,9 @@ float SamplePointShadowLight( uint lightIndex,
 
     const float3 lightDir        = toLight / lightDistance;
     const float3 pointToLightDir = -lightDir;
-    const float3 normal          = normalize( worldNormal );
-    if( dot( normal, pointToLightDir ) <= 0.0f )
-    {
-        return 1.0f;
-    }
+
+    // GeomComputeLighting performs the same N.L test before requesting shadow
+    // visibility, so this second normalization and dot test is redundant.
 
     uint  bestSourceIndex   = MAX_SHADOW_SOURCES;
     uint  secondSourceIndex = MAX_SHADOW_SOURCES;

@@ -57,7 +57,7 @@ float GeomComputeLocalLightShadowVisibility( GEOM_PIXEL_INPUT input,
         return 1.0f;
     }
 
-    return SamplePointShadowLight( shadowIndex, input.WorldPos, input.Normal, geometricNormal );
+    return SamplePointShadowLight( shadowIndex, input.WorldPos, geometricNormal );
 }
 
 //==============================================================================
