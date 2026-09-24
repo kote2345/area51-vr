@@ -1337,19 +1337,14 @@ static xbool XRBuildEyeView( const view& BaseView, u32 Eye, s32 Width,
     EyeView = BaseView;
     EyeView.SetViewport( 0, 0, Width, Height );
 
-    quaternion HeadRotation( -XREye.Orientation[0],
-                              XREye.Orientation[1],
-                             -XREye.Orientation[2],
-                              XREye.Orientation[3] );
-    HeadRotation.Normalize();
-
     matrix4 EyeLocal;
     EyeLocal.Identity();
-    EyeLocal.SetRotation( HeadRotation );
     const vector3 EyeOffset( XREye.Position[0] * 100.0f,
                              XREye.Position[1] * 100.0f,
                             -XREye.Position[2] * 100.0f );
-    EyeLocal.SetTranslation( EyeLocal.RotateVector( EyeOffset ) );
+    /* EyeOffset is in head-local coordinates. The base view already carries
+     * the HMD orientation, so V2W composition rotates this translation once. */
+    EyeLocal.SetTranslation( EyeOffset );
     EyeView.SetV2W( EyeView.GetV2W() * EyeLocal );
 
     const vector3 CameraPosition = EyeView.GetPosition();
@@ -1530,11 +1525,9 @@ void RenderGame( void )
             g_View = pPlayers[i]->GetRenderView();
 
 #if defined( A51_ENABLE_OPENXR )
-            /* Compose the eye camera using the same model as the working
-             * Simpsons OpenXR renderer: local relative XR pose multiplied by
-             * the original game camera.  The compositor receives the
-             * absolute XrView pose separately, so this pose is applied only
-             * to the game render and is never applied twice. */
+            /* PlayerView already contains the tracked HMD orientation for
+             * gameplay and HUD. Compose only the per-eye offset here;
+             * applying the full pose again would make rendered aim diverge. */
             if( (g_XRActiveEye >= 0) && (g_XRActiveEye < 2) )
             {
                 a51::xr::eye_view XREye;
@@ -1552,19 +1545,8 @@ void RenderGame( void )
                     g_View.SetViewport( 0, 0,
                                         XRViewportWidth, XRViewportHeight );
 
-                    /* OpenXR uses +X right, +Y up and -Z forward.  The
-                     * legacy renderer uses camera-left/+Y/+Z, so conjugating
-                     * the pose by the 180-degree Y basis conversion maps
-                     * head rotation without changing the game world. */
-                    quaternion HeadRotation( -XREye.Orientation[0],
-                                               XREye.Orientation[1],
-                                              -XREye.Orientation[2],
-                                               XREye.Orientation[3] );
-                    HeadRotation.Normalize();
-
                     matrix4 EyeLocal;
                     EyeLocal.Identity();
-                    EyeLocal.SetRotation( HeadRotation );
                     /* Area 51 world coordinates use centimetres while
                      * OpenXR poses are metres.  The conversion is applied
                      * only to the relative eye translation; room-scale
@@ -1573,7 +1555,9 @@ void RenderGame( void )
                         XREye.Position[0] * 100.0f,
                         XREye.Position[1] * 100.0f,
                        -XREye.Position[2] * 100.0f );
-                    EyeLocal.SetTranslation( EyeLocal.RotateVector( EyeOffset ) );
+                    /* Keep IPD in head-local coordinates. g_View already
+                     * includes head rotation, so composition applies it once. */
+                    EyeLocal.SetTranslation( EyeOffset );
 
                     /* Camera-to-world composition is base * local. Reversing
                      * this order rotates the whole map around world origin
@@ -1648,8 +1632,8 @@ void RenderGame( void )
             const s32 XRWidth = g_XRRenderWidth ? (s32)g_XRRenderWidth : XRes;
             const s32 XRHeight = g_XRRenderHeight ? (s32)g_XRRenderHeight : YRes;
             /* g_View was changed to the center XR camera above for culling.
-             * Build the shader views from the original game camera, rather
-             * than applying the head rotation a second time. */
+             * PlayerView already contains HMD orientation; add only IPD
+             * separation to each shader view. */
             const view BaseView( pPlayers[i]->GetRenderView() );
             matrix4 StereoView[2];
             matrix4 StereoProjection[2];

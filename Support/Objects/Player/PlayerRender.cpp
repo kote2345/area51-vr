@@ -19,6 +19,15 @@
 #include "StringMgr/StringMgr.hpp"
 #include "e_Audio.hpp"
 
+#if defined( A51_ENABLE_OPENXR )
+#include "VR/XRSession.hpp"
+#include "VR/VRArmIK.hpp"
+#if defined(TARGET_ANDROID)
+#include <android/log.h>
+#endif
+extern a51::xr::VulkanSession g_XRSession;
+#endif
+
 //=========================================================================
 //  IMPLEMENTATION
 //=========================================================================
@@ -35,6 +44,370 @@ extern xbool g_ShowLoreObjectCollision;
 extern f32   g_LO_SphereSize;
 extern f32   g_LO_RenderDist;
 extern f32   g_Dist;
+
+#if defined( A51_ENABLE_OPENXR )
+namespace
+{
+
+static xbool BuildBoneDelta( const vector3& From,
+                             const vector3& To,
+                             const vector3& Pivot,
+                             matrix4& Delta )
+{
+    vector3 Source = From;
+    vector3 Target = To;
+    if( !Source.SafeNormalize() || !Target.SafeNormalize() )
+        return FALSE;
+
+    f32 CosAngle = v3_Dot( Source, Target );
+    CosAngle = MAX( -1.0f, MIN( 1.0f, CosAngle ) );
+    const radian Angle = x_acos( CosAngle );
+    if( Angle < DEG_TO_RAD( 0.05f ) )
+    {
+        Delta.Identity();
+        return TRUE;
+    }
+
+    vector3 Axis = v3_Cross( Source, Target );
+    if( !Axis.SafeNormalize() )
+    {
+        Axis = v3_Cross( Source, vector3( 0.0f, 1.0f, 0.0f ) );
+        if( !Axis.SafeNormalize() )
+        {
+            Axis = v3_Cross( Source, vector3( 1.0f, 0.0f, 0.0f ) );
+            if( !Axis.SafeNormalize() )
+                return FALSE;
+        }
+    }
+
+    Delta.Setup( Axis, Angle );
+    Delta.SetTranslation( Pivot - Delta.RotateVector( Pivot ) );
+    return TRUE;
+}
+
+static xbool IsBoneDescendant( const anim_group& Group,
+                               s32 Bone,
+                               s32 Root )
+{
+    while( Bone >= 0 )
+    {
+        if( Bone == Root )
+            return TRUE;
+        Bone = Group.GetBoneParent( Bone );
+    }
+    return FALSE;
+}
+
+static void ApplyBoneDeltaToSubtree( const anim_group& Group,
+                                     matrix4* pMatrices,
+                                     s32 nMatrices,
+                                     s32 Root,
+                                     const matrix4& Delta )
+{
+    for( s32 Bone = Root; Bone < nMatrices; ++Bone )
+    {
+        if( IsBoneDescendant( Group, Bone, Root ) )
+            pMatrices[Bone] = Delta * pMatrices[Bone];
+    }
+}
+
+static xbool GetVRHandTarget( const player& Player,
+                              u32 Hand,
+                              vector3& Target )
+{
+    a51::xr::controller_pose Pose{};
+    if( !g_XRSession.GetControllerPose( Hand, Pose ) || !Pose.Valid )
+        return FALSE;
+
+    /* The pose is head-relative. Convert OpenXR's right-handed local basis to
+     * the game camera basis, then use the same current head camera transform
+     * that drives the player's view. */
+    const vector3 TrackingOffset( -Pose.Position[0] * 100.0f,
+                                   Pose.Position[1] * 100.0f,
+                                  -Pose.Position[2] * 100.0f );
+    matrix4 TrackingToWorld = Player.GetL2W();
+    TrackingToWorld.SetTranslation( Player.GetRenderView().GetPosition() );
+    a51::xr::eye_view XREye{};
+    if( g_XRSession.GetEyeView( 0, XREye ) )
+    {
+        quaternion HeadRotation( -XREye.Orientation[0],
+                                   XREye.Orientation[1],
+                                  -XREye.Orientation[2],
+                                   XREye.Orientation[3] );
+        HeadRotation.Normalize();
+        matrix4 HeadLocal;
+        HeadLocal.Identity();
+        HeadLocal.SetRotation( HeadRotation );
+        TrackingToWorld = TrackingToWorld * HeadLocal;
+    }
+    const vector3 WorldTarget = TrackingToWorld * TrackingOffset;
+    /* loco_char_anim_player bone positions and render matrices are in world
+     * space, so keep the target there for the two-bone solve. */
+    Target = WorldTarget;
+    return TRUE;
+}
+
+} // anonymous namespace
+#endif
+
+s32 player::GetVrAvatarBoneCount( void )
+{
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() && m_Loco.IsAnimLoaded() )
+        return m_Loco.m_Player.GetNBones();
+#endif
+    return 0;
+}
+
+const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
+                                    s32 nActiveBones )
+{
+#if defined( A51_ENABLE_OPENXR )
+    /* Authored actions own the arms during transitions and interactions.
+     * Tracked targets take over again on locomotion and weapon-ready states. */
+    const xbool bDeferToAuthoredAnimation =
+        ( m_CurrentAnimState == ANIM_STATE_SWITCH_TO ) ||
+        ( m_CurrentAnimState == ANIM_STATE_SWITCH_FROM ) ||
+        ( m_CurrentAnimState == ANIM_STATE_THROW ) ||
+        ( m_CurrentAnimState == ANIM_STATE_PICKUP ) ||
+        ( m_CurrentAnimState == ANIM_STATE_DISCARD ) ||
+        ( m_CurrentAnimState == ANIM_STATE_MELEE ) ||
+        ( m_CurrentAnimState >= ANIM_STATE_MELEE_FROM_CENTER &&
+          m_CurrentAnimState <= ANIM_STATE_MELEE_END ) ||
+        ( m_CurrentAnimState == ANIM_STATE_COMBO_BEGIN ) ||
+        ( m_CurrentAnimState == ANIM_STATE_COMBO_HIT ) ||
+        ( m_CurrentAnimState == ANIM_STATE_COMBO_END ) ||
+        ( m_CurrentAnimState == ANIM_STATE_RELOAD ) ||
+        ( m_CurrentAnimState == ANIM_STATE_RELOAD_IN ) ||
+        ( m_CurrentAnimState == ANIM_STATE_RELOAD_OUT );
+
+    if( !IsVrAvatarMode() || !pMatrices || nActiveBones <= 0 ||
+        !m_Loco.IsAnimLoaded() || IsDead() ||
+        m_CurrentAnimState == ANIM_STATE_DEATH ||
+        m_CurrentAnimState == ANIM_STATE_CHANGE_MUTATION ||
+        bDeferToAuthoredAnimation )
+    {
+        return pMatrices;
+    }
+
+    const anim_group* pGroup = m_hAnimGroup.GetPointer();
+    if( !pGroup )
+        return pMatrices;
+
+    const s32 UpperBones[2] =
+    {
+        m_Loco.m_Player.GetBoneIndex( a51::xr::kMultiplayerUpperArmBones[0] ),
+        m_Loco.m_Player.GetBoneIndex( a51::xr::kMultiplayerUpperArmBones[1] )
+    };
+    const s32 ForearmBones[2] =
+    {
+        m_Loco.m_Player.GetBoneIndex( a51::xr::kMultiplayerForearmBones[0] ),
+        m_Loco.m_Player.GetBoneIndex( a51::xr::kMultiplayerForearmBones[1] )
+    };
+    const s32 HandBones[2] =
+    {
+        m_Loco.m_Player.GetBoneIndex( a51::xr::kMultiplayerHandBones[0] ),
+        m_Loco.m_Player.GetBoneIndex( a51::xr::kMultiplayerHandBones[1] )
+    };
+
+    matrix4* pSolved = (matrix4*)smem_BufferAlloc(
+        nActiveBones * sizeof( matrix4 ) );
+    if( !pSolved )
+        return pMatrices;
+    x_memcpy( pSolved, pMatrices, nActiveBones * sizeof( matrix4 ) );
+
+    xbool bApplied = FALSE;
+#if defined(TARGET_ANDROID)
+    static u32 IKTraceFrame = 0;
+    const xbool TraceVRIK = ( (++IKTraceFrame % 90u) == 0u );
+#endif
+    for( u32 Hand = 0; Hand < 2; ++Hand )
+    {
+        if( UpperBones[Hand] < 0 || ForearmBones[Hand] < 0 ||
+            HandBones[Hand] < 0 || UpperBones[Hand] >= nActiveBones ||
+            ForearmBones[Hand] >= nActiveBones || HandBones[Hand] >= nActiveBones )
+        {
+            continue;
+        }
+
+        vector3 WristTarget;
+        if( !GetVRHandTarget( *this, Hand, WristTarget ) )
+        {
+#if defined(TARGET_ANDROID)
+            if( TraceVRIK )
+                __android_log_print( ANDROID_LOG_INFO, "A51VR",
+                    "ik hand=%s controller pose unavailable",
+                    (Hand == 0) ? "left" : "right" );
+#endif
+            continue;
+        }
+
+        const vector3 Shoulder = m_Loco.m_Player.GetBonePosition( UpperBones[Hand] );
+        const vector3 Elbow = m_Loco.m_Player.GetBonePosition( ForearmBones[Hand] );
+        const vector3 Wrist = m_Loco.m_Player.GetBonePosition( HandBones[Hand] );
+        const f32 UpperLength = ( Elbow - Shoulder ).Length();
+        const f32 ForearmLength = ( Wrist - Elbow ).Length();
+
+#if defined(TARGET_ANDROID)
+        if( TraceVRIK )
+            __android_log_print( ANDROID_LOG_INFO, "A51VR",
+                "ik hand=%s bones=%d/%d/%d target=%.1f,%.1f,%.1f wrist=%.1f,%.1f,%.1f lengths=%.1f/%.1f",
+                (Hand == 0) ? "left" : "right",
+                UpperBones[Hand], ForearmBones[Hand], HandBones[Hand],
+                WristTarget.GetX(), WristTarget.GetY(), WristTarget.GetZ(),
+                Wrist.GetX(), Wrist.GetY(), Wrist.GetZ(),
+                UpperLength, ForearmLength );
+#endif
+
+        const a51::xr::ik_vec3 IkShoulder =
+            { Shoulder.GetX(), Shoulder.GetY(), Shoulder.GetZ() };
+        const a51::xr::ik_vec3 IkTarget =
+            { WristTarget.GetX(), WristTarget.GetY(), WristTarget.GetZ() };
+        const a51::xr::ik_vec3 IkPole =
+            { Elbow.GetX(), Elbow.GetY(), Elbow.GetZ() };
+        a51::xr::arm_ik_result Result{};
+        if( !a51::xr::SolveTwoBoneArm( IkShoulder, IkTarget, IkPole,
+                                       UpperLength, ForearmLength, Result ) ||
+            !Result.Valid )
+        {
+            continue;
+        }
+
+        const vector3 TargetElbow( Result.Elbow.X,
+                                   Result.Elbow.Y,
+                                   Result.Elbow.Z );
+        const vector3 ReachableWrist( Result.Wrist.X,
+                                      Result.Wrist.Y,
+                                      Result.Wrist.Z );
+
+        matrix4 UpperDelta;
+        if( !BuildBoneDelta( Elbow - Shoulder, TargetElbow - Shoulder,
+                             Shoulder, UpperDelta ) )
+        {
+            continue;
+        }
+        ApplyBoneDeltaToSubtree( *pGroup, pSolved, nActiveBones,
+                                 UpperBones[Hand], UpperDelta );
+
+        const vector3 ElbowAfterUpper = UpperDelta * Elbow;
+        const vector3 WristAfterUpper = UpperDelta * Wrist;
+        matrix4 ForearmDelta;
+        if( !BuildBoneDelta( WristAfterUpper - ElbowAfterUpper,
+                             ReachableWrist - ElbowAfterUpper,
+                             ElbowAfterUpper, ForearmDelta ) )
+        {
+            continue;
+        }
+        ApplyBoneDeltaToSubtree( *pGroup, pSolved, nActiveBones,
+                                 ForearmBones[Hand], ForearmDelta );
+        bApplied = TRUE;
+    }
+
+    return bApplied ? pSolved : pMatrices;
+#else
+    (void)nActiveBones;
+    return pMatrices;
+#endif
+}
+
+const matrix4* player::ApplyVrHeadVisibility( const matrix4* pMatrices,
+                                              s32 nActiveBones )
+{
+#if defined( A51_ENABLE_OPENXR )
+    if( !IsVrAvatarMode() || !pMatrices || nActiveBones <= 0 ||
+        !m_Loco.IsAnimLoaded() || IsDead() )
+    {
+        return pMatrices;
+    }
+
+    const anim_group* pGroup = m_hAnimGroup.GetPointer();
+    if( !pGroup )
+        return pMatrices;
+
+    s32 HeadRoots[4] = { -1, -1, -1, -1 };
+    s32 nHeadRoots = 0;
+    for( s32 Bone = 0; Bone < nActiveBones; ++Bone )
+    {
+        const char* pName = pGroup->GetBone( Bone ).Name;
+        if( !pName || !x_stristr( pName, "HEAD" ) || nHeadRoots >= 4 )
+            continue;
+
+        const s32 Parent = pGroup->GetBoneParent( Bone );
+        const char* pParentName = ( Parent >= 0 )
+                                ? pGroup->GetBone( Parent ).Name : NULL;
+        if( pParentName && x_stristr( pParentName, "HEAD" ) )
+            continue;
+        HeadRoots[nHeadRoots++] = Bone;
+    }
+    if( nHeadRoots == 0 )
+        return pMatrices;
+
+    matrix4* pHeadless = (matrix4*)smem_BufferAlloc(
+        nActiveBones * sizeof( matrix4 ) );
+    if( !pHeadless )
+        return pMatrices;
+    x_memcpy( pHeadless, pMatrices, nActiveBones * sizeof( matrix4 ) );
+
+    for( s32 iRoot = 0; iRoot < nHeadRoots; ++iRoot )
+    {
+        const s32 Root = HeadRoots[iRoot];
+        const vector3 HeadPivot = m_Loco.m_Player.GetBonePosition( Root );
+        matrix4 CollapsedHead;
+        CollapsedHead.Setup( vector3( 0.0f, 0.0f, 0.0f ),
+                             quaternion( 0.0f, 0.0f, 0.0f, 1.0f ),
+                             HeadPivot );
+
+        for( s32 Bone = Root; Bone < nActiveBones; ++Bone )
+        {
+            s32 Parent = Bone;
+            while( Parent >= 0 && Parent != Root )
+                Parent = pGroup->GetBoneParent( Parent );
+            if( Parent == Root )
+                pHeadless[Bone] = CollapsedHead;
+        }
+    }
+
+    return pHeadless;
+#else
+    (void)nActiveBones;
+    return pMatrices;
+#endif
+}
+
+void player::UpdateVrPistolAttachment( const matrix4* pMatrices,
+                                       s32 nActiveBones )
+{
+#if defined( A51_ENABLE_OPENXR )
+    if( !IsVrAvatarMode() ||
+        ( m_CurrentWeaponItem != INVEN_WEAPON_DESERT_EAGLE ) ||
+        !pMatrices || !m_Loco.IsAnimLoaded() )
+    {
+        return;
+    }
+
+    /* weapon_attach is authored around the forearm on this soldier rig; the
+     * actual hand bone keeps the pistol grip at the controller-driven wrist. */
+    const s32 HandBone = m_Loco.m_Player.GetBoneIndex(
+        a51::xr::kMultiplayerHandBones[1] );
+    if( HandBone < 0 || HandBone >= nActiveBones )
+        return;
+
+    new_weapon* pWeapon = GetCurrentWeaponPtr();
+    if( !pWeapon )
+        return;
+
+    /* Use the post-IK wrist matrix, then restore the hand's authored bind
+     * translation to put the gun grip at the center of the palm. */
+    matrix4 HandL2W = pMatrices[HandBone];
+    HandL2W.PreTranslate( m_Loco.m_Player.GetBoneBindPosition( HandBone ) );
+    pWeapon->OnTransform( HandL2W );
+    pWeapon->SetZone1( GetZone1() );
+    pWeapon->SetZone2( GetZone2() );
+#else
+    (void)pMatrices;
+    (void)nActiveBones;
+#endif
+}
 
 #ifdef DEBUG_GRENADE_THROWING
 extern xbool   g_ShowGrenadeEventCollision;
@@ -168,17 +541,38 @@ void player::OnRenderTransparent(void)
     new_weapon* pWeapon = GetCurrentWeaponPtr();
     if( pWeapon )
     {
-        // set the proper render state so we can refrain from drawing the 1st person muzzle fx
-        if( IsAvatar() && pWeapon->IsUsingSplitScreen() )
+        const new_weapon::render_state SavedState = pWeapon->GetRenderState();
+        if( IsVrAvatarMode() &&
+            ( m_CurrentWeaponItem == INVEN_WEAPON_DESERT_EAGLE ) )
+        {
+            pWeapon->SetRenderState( new_weapon::RENDER_STATE_PLAYER );
+        }
+        else if( IsAvatar() && pWeapon->IsUsingSplitScreen() )
         {
             pWeapon->SetRenderState( new_weapon::RENDER_STATE_NPC );
         }
 
         pWeapon->OnRenderTransparent();
 
-        // put renderstate back like it was
-        pWeapon->SetRenderState( new_weapon::RENDER_STATE_PLAYER );
+        pWeapon->SetRenderState( SavedState );
     }
+}
+
+void player::OnRenderWeapon( void )
+{
+    new_weapon* pWeapon = GetCurrentWeaponPtr();
+    if( IsVrAvatarMode() && pWeapon &&
+        ( m_CurrentWeaponItem == INVEN_WEAPON_DESERT_EAGLE ) )
+    {
+        /* Player render resources are initialized for the local weapon. The
+         * separate NPC weapon rig is not loaded for this single-player actor. */
+        pWeapon->SetRenderState( new_weapon::RENDER_STATE_PLAYER );
+        pWeapon->RenderWeapon( FALSE, GetFloorColor(),
+                               ( m_CloakState == CLOAKING_ON ) );
+        return;
+    }
+
+    actor::OnRenderWeapon();
 }
 
 void player::OnRender( void )
@@ -256,7 +650,7 @@ void player::OnRender( void )
     // We need to render debug stuff at least, if sniper zoom is enabled
     RenderAimAssistDebugInfo();
 
-    if( RenderSniperZoom()   ||                 // if we're in sniper mode, don't render player arms and such
+    if( (RenderSniperZoom() && !IsVrAvatarMode()) || // zoom only suppresses flat first-person arms
         IsCinemaRunning() ||                    // if we are playing a cinematic, don't draw arms
         (m_bHidePlayerArms && !IsAvatar()) )    // Has a trigger or something turned off our arms?
     {
@@ -268,7 +662,7 @@ void player::OnRender( void )
         return;
     }
 
-    if( !IsAvatar() )
+    if( !IsAvatar() && !IsVrAvatarMode() )
     {
         // gather flags and ambient color
         xcolor Ambient;
@@ -388,7 +782,37 @@ void player::OnRender( void )
     }
     else
     {
+#if defined( A51_ENABLE_OPENXR )
+        if( IsVrAvatarMode() )
+        {
+            /* The headset is inside this third-person avatar. Hide head
+             * virtual meshes by name only for this draw, then restore the
+             * actor's mask before weapon/effect draws or later views. */
+            const virtual_mesh_mask SavedMask = m_SkinInst.GetVMeshMask();
+            geom* pAvatarGeom = m_SkinInst.GetGeom();
+            if( pAvatarGeom )
+            {
+                const s32 nMeshes = MIN( pAvatarGeom->m_nVirtualMeshes,
+                                         virtual_mesh_mask::MAX_VMESHES );
+                for( s32 iMesh = 0; iMesh < nMeshes; ++iMesh )
+                {
+                    const char* pMeshName = pAvatarGeom->GetVMeshName( iMesh );
+                    if( pMeshName &&
+                        ( x_stristr( pMeshName, "HEAD" ) ||
+                          x_stristr( pMeshName, "FACE" ) ||
+                          x_stristr( pMeshName, "HELMET" ) ) )
+                        m_SkinInst.SetVMeshBit( iMesh, FALSE );
+                }
+            }
+
+            actor::OnRender();
+            m_SkinInst.SetVMeshMask( SavedMask.VMeshMask );
+        }
+        else
+#endif
+        {
         actor::OnRender();
+        }
         new_weapon* pWeapon = GetCurrentWeaponPtr();
         if( pWeapon )
             pWeapon->SetRenderState( new_weapon::RENDER_STATE_PLAYER );

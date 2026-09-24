@@ -13,6 +13,11 @@
 #include "NetworkMgr/GameMgr.hpp"
 #include "GameLib/DebugCheats.hpp"
 
+#if defined( A51_ENABLE_OPENXR )
+#include "VR/XRSession.hpp"
+extern a51::xr::VulkanSession g_XRSession;
+#endif
+
 //=========================================================================
 
 static const f32 DeathCamStartBackDist = 800.0f;
@@ -22,6 +27,39 @@ static const f32 s_ArmViewPct          = 0.3f;
 static const f32 s_MaxCameraDelta      = 28.0f;
 
 extern view g_View;
+
+#if defined( A51_ENABLE_OPENXR )
+namespace
+{
+
+static void ApplyXRHeadOrientation( matrix4& ViewToWorld )
+{
+    a51::xr::eye_view XREye{};
+    if( !g_XRSession.GetEyeView( 0, XREye ) )
+        return;
+
+    const f32 QLengthSquared =
+        XREye.Orientation[0] * XREye.Orientation[0] +
+        XREye.Orientation[1] * XREye.Orientation[1] +
+        XREye.Orientation[2] * XREye.Orientation[2] +
+        XREye.Orientation[3] * XREye.Orientation[3];
+    if( !( QLengthSquared > 0.5f ) )
+        return;
+
+    quaternion HeadRotation( -XREye.Orientation[0],
+                               XREye.Orientation[1],
+                              -XREye.Orientation[2],
+                               XREye.Orientation[3] );
+    HeadRotation.Normalize();
+
+    matrix4 HeadLocal;
+    HeadLocal.Identity();
+    HeadLocal.SetRotation( HeadRotation );
+    ViewToWorld = ViewToWorld * HeadLocal;
+}
+
+} // anonymous namespace
+#endif
 
 view player::m_Views[MAX_LOCAL_PLAYERS];
 
@@ -193,6 +231,19 @@ void player::OnExitFreeCam( vector3& NewPos )
 vector3 player::GetDefaultViewPos( void )
 {
     vector3 FinalPos( 0.0f, 0.0f, 0.0f );
+#if defined( A51_ENABLE_OPENXR )
+    /* The FP camera bone belongs to the separate first-person arms rig. In
+     * VR the rendered body is the multiplayer avatar, so anchor the headset
+     * camera at that avatar's eye point instead. */
+    if( IsVrAvatarMode() && m_Loco.IsAnimLoaded() )
+    {
+        /* This NPC's authored aim point sits low in its head. Raise the VR
+         * eye point slightly while retaining the animated crouch/body height. */
+        vector3 EyePosition = m_Loco.GetEyePosition();
+        EyePosition.GetY() += 15.0f;
+        return EyePosition;
+    }
+#endif
     if( m_iCameraBone > -1 )
     {
         vector3 const AnimBonePos = m_AnimPlayer.GetBonePosition( m_iCameraBone );
@@ -280,9 +331,20 @@ PlayerViewSample player::BuildFirstPersonViewSample( void )
     }
     else
     {
-        Rot.Set( m_Pitch,
-                 m_Yaw,
-                 -DEG_TO_RAD( GetTweakF32( "LeanMaxDegrees" ) * m_SoftLeanAmount ) );
+#if defined( A51_ENABLE_OPENXR )
+        if( IsVrAvatarMode() )
+        {
+            /* Head pitch and yaw now come from OpenXR. Keep only the game
+             * body yaw as the tracking-origin base. */
+            Rot.Set( 0.0f, m_Yaw, 0.0f );
+        }
+        else
+#endif
+        {
+            Rot.Set( m_Pitch,
+                     m_Yaw,
+                     -DEG_TO_RAD( GetTweakF32( "LeanMaxDegrees" ) * m_SoftLeanAmount ) );
+        }
     }
 
     if( ApplyLockedRotation )
@@ -327,6 +389,13 @@ PlayerViewSample player::BuildFirstPersonViewSample( void )
     }
 
     Sample.ViewToWorld.Setup( vector3( 1.0f, 1.0f, 1.0f ), Rot, Pos );
+
+#if defined( A51_ENABLE_OPENXR )
+    /* This simulation view is shared by aiming, interaction traces, HUD and
+     * the renderer. RenderGameStereoXR adds only per-eye separation later. */
+    if( IsVrAvatarMode() && !ApplyLockedRotation )
+        ApplyXRHeadOrientation( Sample.ViewToWorld );
+#endif
 
     slot_id const SlotID = g_ObjMgr.GetFirst( object::TYPE_LEVEL_SETTINGS );
     if( SlotID != SLOT_NULL )

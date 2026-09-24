@@ -1576,7 +1576,10 @@ render_pipeline* ui_renderer::GetOrCreatePipeline( rtarget_format Format,
     if( !BuildPipelineDesc( Desc, Format, Blend ) )
         return NULL;
 
-    const u64 Key = (u64)(u8)Format | ((u64)(u8)Blend << 8);
+    const u64 ViewMask = m_bStereoOverlay ? 0x3u : 0u;
+    const u64 Key = (u64)(u8)Format |
+                    ((u64)(u8)Blend << 8) |
+                    (ViewMask << 16);
     return isPrewarm
          ? m_pipelines.Prewarm    ( Key, Desc )
          : m_pipelines.GetOrCreate( Key, Desc );
@@ -1632,6 +1635,7 @@ xbool ui_renderer::BuildPipelineDesc( render_pipeline_desc& Desc,
     Desc.ColorTargets[0].Blend    = rstate_GetBlendDesc( ui_GetBlendPreset( Blend ) );
     Desc.DepthFormat              = RTARGET_FORMAT_COUNT;
     Desc.SampleCount              = 1;
+    Desc.ViewMask                 = m_bStereoOverlay ? 0x3u : 0u;
     Desc.pDebugName               = "UIPipeline";
     return TRUE;
 }

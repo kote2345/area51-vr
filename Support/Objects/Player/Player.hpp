@@ -335,6 +335,7 @@ public:
             // Object description.
     virtual const object_desc&  GetTypeDesc     ( void ) const;
     static  const object_desc&  GetObjectType   ( void );
+    virtual void            OnRenderWeapon      ( void );
 
 
     static  player*         GetActivePlayer     ( void );
@@ -349,6 +350,14 @@ public:
             void            FinalizeCinemaView   ( void );
     const   view_info&      GetViewInfo         ( void ) { return m_ViewInfo; }
             xbool           IsAvatar            ( void );
+            xbool           IsVrAvatarMode      ( void ) const;
+            const matrix4*  ApplyVrArmIK        ( const matrix4* pMatrices,
+                                                 s32 nActiveBones );
+            const matrix4*  ApplyVrHeadVisibility( const matrix4* pMatrices,
+                                                  s32 nActiveBones );
+            void            UpdateVrPistolAttachment( const matrix4* pMatrices,
+                                                       s32 nActiveBones );
+            s32             GetVrAvatarBoneCount( void );
             xbool           IsMutated           ( void ) { return m_bIsMutated; }
             xbool           IsMutantVisionOn    ( void ) { return m_bIsMutantVisionOn; }
     virtual xbool           SetMutated          ( xbool bMutate );

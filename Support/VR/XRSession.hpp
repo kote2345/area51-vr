@@ -44,6 +44,15 @@ struct eye_view
     f32 FovDown;
 };
 
+/* Controller poses are expressed relative to the session's yaw-aligned
+ * tracking origin, in OpenXR meters and coordinate convention. */
+struct controller_pose
+{
+    f32 Position[3];
+    f32 Orientation[4];
+    xbool Valid;
+};
+
 enum class session_state : u8
 {
     Uninitialized,
@@ -70,6 +79,7 @@ public:
     xbool           BeginFrame      ( void );
     void            CaptureInput   ( ::input_event_buffer& Events );
     xbool           GetEyeView      ( u32 Eye, eye_view& View ) const;
+    xbool           GetControllerPose( u32 Hand, controller_pose& Pose ) const;
     xbool           RenderTestFrame ( void );
     xbool           PrepareFrame   ( const vulkan_frame_info& FrameInfo );
     xbool           PrepareQuadFrame( const vulkan_frame_info& FrameInfo,

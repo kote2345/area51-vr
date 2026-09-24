@@ -4291,6 +4291,16 @@ const matrix4* actor::GetBonesForRender( u64 LODMask, s32& nActiveBones )
     // Always include the weapon bone for correct positioning
     nActiveBones = x_max( nActiveBones, pLoco->GetWeaponBoneIndex() + 1 );
 
+#if defined( A51_ENABLE_OPENXR )
+    /* The VR local campaign avatar solves tracked arms against its complete
+     * MP skeleton, even when the current LOD would otherwise omit those bones. */
+    if( IsKindOf( player::GetRTTI() ) )
+    {
+        player& Player = player::GetSafeType( *this );
+        nActiveBones = x_max( nActiveBones, Player.GetVrAvatarBoneCount() );
+    }
+#endif
+
 #ifndef X_EDITOR
 
     // SB: 2/22/05
@@ -4340,6 +4350,16 @@ const matrix4* actor::GetBonesForRender( u64 LODMask, s32& nActiveBones )
 
         pMatrices = pMat;
     }
+
+#if defined( A51_ENABLE_OPENXR )
+    if( pMatrices && IsKindOf( player::GetRTTI() ) )
+    {
+        player& Player = player::GetSafeType( *this );
+        pMatrices = Player.ApplyVrArmIK( pMatrices, nActiveBones );
+        Player.UpdateVrPistolAttachment( pMatrices, nActiveBones );
+        pMatrices = Player.ApplyVrHeadVisibility( pMatrices, nActiveBones );
+    }
+#endif
 
     return pMatrices;
 }

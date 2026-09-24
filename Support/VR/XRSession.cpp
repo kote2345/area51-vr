@@ -276,6 +276,12 @@ struct VulkanSession::Impl
     XrAction LeftStickClickAction = XR_NULL_HANDLE;
     XrAction RightStickClickAction = XR_NULL_HANDLE;
     XrAction LeftMenuAction = XR_NULL_HANDLE;
+    XrAction LeftGripPoseAction = XR_NULL_HANDLE;
+    XrAction RightGripPoseAction = XR_NULL_HANDLE;
+    XrSpace LeftGripPoseSpace = XR_NULL_HANDLE;
+    XrSpace RightGripPoseSpace = XR_NULL_HANDLE;
+    XrPath LeftHandPath = XR_NULL_PATH;
+    XrPath RightHandPath = XR_NULL_PATH;
     xbool InputActionsReady = FALSE;
     xbool PreviousLeftX = FALSE;
     xbool PreviousLeftY = FALSE;
@@ -692,59 +698,6 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
                                               &ActionSetInfo,
                                               &m_pImpl->InputActionSet ) );
 
-        auto MakeAction = [&]( XrActionType Type,
-                               const char* pName,
-                               const char* pLocalized,
-                               XrAction& Action ) -> xbool
-        {
-            if( !InputSetupOk )
-                return FALSE;
-
-            XrActionCreateInfo ActionInfo{ XR_TYPE_ACTION_CREATE_INFO };
-            ActionInfo.actionType = Type;
-            std::snprintf( ActionInfo.actionName,
-                           XR_MAX_ACTION_NAME_SIZE, "%s", pName );
-            std::snprintf( ActionInfo.localizedActionName,
-                           XR_MAX_LOCALIZED_ACTION_NAME_SIZE,
-                           "%s", pLocalized );
-            return XR_SUCCEEDED( xrCreateAction( m_pImpl->InputActionSet,
-                                                  &ActionInfo, &Action ) );
-        };
-
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_VECTOR2F_INPUT,
-                                   "left_stick", "Left Stick",
-                                   m_pImpl->LeftStickAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_VECTOR2F_INPUT,
-                                   "right_stick", "Right Stick",
-                                   m_pImpl->RightStickAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_FLOAT_INPUT,
-                                   "left_trigger", "Left Trigger",
-                                   m_pImpl->LeftTriggerAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_FLOAT_INPUT,
-                                   "right_trigger", "Right Trigger",
-                                   m_pImpl->RightTriggerAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
-                                   "left_x", "Left X",
-                                   m_pImpl->LeftXAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
-                                   "left_y", "Left Y",
-                                   m_pImpl->LeftYAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
-                                   "right_a", "Right A",
-                                   m_pImpl->RightAAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
-                                   "right_b", "Right B",
-                                   m_pImpl->RightBAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
-                                   "left_stick_click", "Left Stick Click",
-                                   m_pImpl->LeftStickClickAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
-                                   "right_stick_click", "Right Stick Click",
-                                   m_pImpl->RightStickClickAction ) && InputSetupOk;
-        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
-                                   "left_menu", "Left Menu",
-                                   m_pImpl->LeftMenuAction ) && InputSetupOk;
-
         XrPath LeftHand = XR_NULL_PATH;
         XrPath RightHand = XR_NULL_PATH;
         const char* const HandPaths[] = {
@@ -756,6 +709,93 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
                                            HandPaths[0], &LeftHand ) ) &&
             XR_SUCCEEDED( xrStringToPath( m_pImpl->Instance,
                                            HandPaths[1], &RightHand ) );
+        m_pImpl->LeftHandPath = LeftHand;
+        m_pImpl->RightHandPath = RightHand;
+        const XrPath HandSubactionPaths[] = { LeftHand, RightHand };
+
+        auto MakeAction = [&]( XrActionType Type,
+                               const char* pName,
+                               const char* pLocalized,
+                               XrAction& Action,
+                               xbool bHandScoped ) -> xbool
+        {
+            if( !InputSetupOk )
+                return FALSE;
+
+            XrActionCreateInfo ActionInfo{ XR_TYPE_ACTION_CREATE_INFO };
+            ActionInfo.actionType = Type;
+            if( bHandScoped )
+            {
+                ActionInfo.countSubactionPaths = 2;
+                ActionInfo.subactionPaths = HandSubactionPaths;
+            }
+            std::snprintf( ActionInfo.actionName,
+                           XR_MAX_ACTION_NAME_SIZE, "%s", pName );
+            std::snprintf( ActionInfo.localizedActionName,
+                           XR_MAX_LOCALIZED_ACTION_NAME_SIZE,
+                           "%s", pLocalized );
+            return XR_SUCCEEDED( xrCreateAction( m_pImpl->InputActionSet,
+                                                  &ActionInfo, &Action ) );
+        };
+
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_VECTOR2F_INPUT,
+                                   "left_stick", "Left Stick",
+                                   m_pImpl->LeftStickAction, TRUE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_VECTOR2F_INPUT,
+                                   "right_stick", "Right Stick",
+                                   m_pImpl->RightStickAction, TRUE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_FLOAT_INPUT,
+                                   "left_trigger", "Left Trigger",
+                                   m_pImpl->LeftTriggerAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_FLOAT_INPUT,
+                                   "right_trigger", "Right Trigger",
+                                   m_pImpl->RightTriggerAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
+                                   "left_x", "Left X",
+                                   m_pImpl->LeftXAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
+                                   "left_y", "Left Y",
+                                   m_pImpl->LeftYAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
+                                   "right_a", "Right A",
+                                   m_pImpl->RightAAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
+                                   "right_b", "Right B",
+                                   m_pImpl->RightBAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
+                                   "left_stick_click", "Left Stick Click",
+                                   m_pImpl->LeftStickClickAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
+                                   "right_stick_click", "Right Stick Click",
+                                   m_pImpl->RightStickClickAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
+                                   "left_menu", "Left Menu",
+                                   m_pImpl->LeftMenuAction, FALSE ) && InputSetupOk;
+
+        auto MakePoseAction = [&]( const char* pName,
+                                   const char* pLocalized,
+                                   XrPath HandPath,
+                                   XrAction& Action ) -> xbool
+        {
+            if( !InputSetupOk || HandPath == XR_NULL_PATH )
+                return FALSE;
+            XrActionCreateInfo ActionInfo{ XR_TYPE_ACTION_CREATE_INFO };
+            ActionInfo.actionType = XR_ACTION_TYPE_POSE_INPUT;
+            ActionInfo.countSubactionPaths = 1;
+            ActionInfo.subactionPaths = &HandPath;
+            std::snprintf( ActionInfo.actionName,
+                           XR_MAX_ACTION_NAME_SIZE, "%s", pName );
+            std::snprintf( ActionInfo.localizedActionName,
+                           XR_MAX_LOCALIZED_ACTION_NAME_SIZE,
+                           "%s", pLocalized );
+            return XR_SUCCEEDED( xrCreateAction( m_pImpl->InputActionSet,
+                                                  &ActionInfo, &Action ) );
+        };
+        const xbool PoseActionsReady = InputSetupOk &&
+            MakePoseAction( "left_grip_pose", "Left Grip Pose",
+                            LeftHand, m_pImpl->LeftGripPoseAction ) &&
+            MakePoseAction( "right_grip_pose", "Right Grip Pose",
+                            RightHand, m_pImpl->RightGripPoseAction );
 
         std::vector<XrActionSuggestedBinding> Bindings;
         auto AddBinding = [&]( XrAction Action, const char* pPath ) -> xbool
@@ -797,6 +837,21 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
             AddBinding( m_pImpl->LeftMenuAction,
                         "/user/hand/left/input/menu/click" );
 
+        /* Grip tracking is optional. A runtime that cannot create a pose
+         * action must still keep all legacy VR buttons and sticks working. */
+        if( InputSetupOk && PoseActionsReady )
+        {
+            const size_t BaseBindingCount = Bindings.size();
+            if( !AddBinding( m_pImpl->LeftGripPoseAction,
+                             "/user/hand/left/input/grip/pose" ) ||
+                !AddBinding( m_pImpl->RightGripPoseAction,
+                             "/user/hand/right/input/grip/pose" ) )
+            {
+                Bindings.resize( BaseBindingCount );
+                x_DebugMsg( "OpenXR: controller grip bindings unavailable; arm tracking disabled\n" );
+            }
+        }
+
         auto SuggestForProfile = [&]( const char* pProfile ) -> xbool
         {
             XrPath ProfilePath = XR_NULL_PATH;
@@ -834,6 +889,12 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
         }
 
         m_pImpl->InputActionsReady = InputSetupOk;
+#if defined(TARGET_ANDROID)
+        x_DebugMsg( "OpenXR input actions: ready=%d legacyTouch=%d metaTouchPlus=%d\n",
+                    m_pImpl->InputActionsReady ? 1 : 0,
+                    SuggestedLegacy ? 1 : 0,
+                    SuggestedMeta ? 1 : 0 );
+#endif
     }
 
     XrReferenceSpaceCreateInfo SpaceCreateInfo{
@@ -926,6 +987,33 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
         Shutdown();
         m_State = session_state::Failed;
         return FALSE;
+    }
+
+    if( m_pImpl->InputActionsReady )
+    {
+        XrActionSpaceCreateInfo ActionSpaceInfo{
+            XR_TYPE_ACTION_SPACE_CREATE_INFO };
+        ActionSpaceInfo.poseInActionSpace.orientation.w = 1.0f;
+        ActionSpaceInfo.action = m_pImpl->LeftGripPoseAction;
+        ActionSpaceInfo.subactionPath = m_pImpl->LeftHandPath;
+        const xbool LeftSpaceReady = XR_SUCCEEDED( xrCreateActionSpace(
+            m_pImpl->Session, &ActionSpaceInfo,
+            &m_pImpl->LeftGripPoseSpace ) );
+        ActionSpaceInfo.action = m_pImpl->RightGripPoseAction;
+        ActionSpaceInfo.subactionPath = m_pImpl->RightHandPath;
+        const xbool RightSpaceReady = XR_SUCCEEDED( xrCreateActionSpace(
+            m_pImpl->Session, &ActionSpaceInfo,
+            &m_pImpl->RightGripPoseSpace ) );
+        if( !LeftSpaceReady || !RightSpaceReady )
+        {
+            if( m_pImpl->LeftGripPoseSpace )
+                xrDestroySpace( m_pImpl->LeftGripPoseSpace );
+            if( m_pImpl->RightGripPoseSpace )
+                xrDestroySpace( m_pImpl->RightGripPoseSpace );
+            m_pImpl->LeftGripPoseSpace = XR_NULL_HANDLE;
+            m_pImpl->RightGripPoseSpace = XR_NULL_HANDLE;
+            x_DebugMsg( "OpenXR: controller pose spaces unavailable; arm tracking disabled\n" );
+        }
     }
     if( bCanUseArray )
     {
@@ -1212,6 +1300,10 @@ void VulkanSession::Shutdown( void )
         vkDestroyCommandPool( m_pImpl->Device, m_pImpl->CommandPool, NULL );
     if( m_pImpl->RenderPass && m_pImpl->Device )
         vkDestroyRenderPass( m_pImpl->Device, m_pImpl->RenderPass, NULL );
+    if( m_pImpl->LeftGripPoseSpace )
+        xrDestroySpace( m_pImpl->LeftGripPoseSpace );
+    if( m_pImpl->RightGripPoseSpace )
+        xrDestroySpace( m_pImpl->RightGripPoseSpace );
     if( m_pImpl->LeftStickAction )
         xrDestroyAction( m_pImpl->LeftStickAction );
     if( m_pImpl->RightStickAction )
@@ -1234,6 +1326,10 @@ void VulkanSession::Shutdown( void )
         xrDestroyAction( m_pImpl->RightStickClickAction );
     if( m_pImpl->LeftMenuAction )
         xrDestroyAction( m_pImpl->LeftMenuAction );
+    if( m_pImpl->LeftGripPoseAction )
+        xrDestroyAction( m_pImpl->LeftGripPoseAction );
+    if( m_pImpl->RightGripPoseAction )
+        xrDestroyAction( m_pImpl->RightGripPoseAction );
     if( m_pImpl->InputActionSet )
         xrDestroyActionSet( m_pImpl->InputActionSet );
     if( m_pImpl->Space )
@@ -1443,19 +1539,22 @@ void VulkanSession::CaptureInput( ::input_event_buffer& Events )
         Previous = Current;
     };
 
-    auto AppendStick = [&]( XrAction Action, f32 Previous[2],
+    auto AppendStick = [&]( XrAction Action, XrPath HandPath,
+                            f32 Previous[2],
                             input_gadget XGadget, input_gadget YGadget,
-                            xbool bAllowY )
+                            xbool bAllowY, xbool& IsActive )
     {
         XrActionStateGetInfo GetInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
         GetInfo.action = Action;
-        GetInfo.subactionPath = XR_NULL_PATH;
+        GetInfo.subactionPath = HandPath;
         XrActionStateVector2f State{ XR_TYPE_ACTION_STATE_VECTOR2F };
         if( XR_FAILED( xrGetActionStateVector2f( m_pImpl->Session,
                                                  &GetInfo, &State ) ) )
         {
+            IsActive = FALSE;
             return;
         }
+        IsActive = State.isActive ? TRUE : FALSE;
 
         f32 Current[2] = { 0.0f, 0.0f };
         if( State.isActive )
@@ -1479,10 +1578,16 @@ void VulkanSession::CaptureInput( ::input_event_buffer& Events )
         Previous[1] = Current[1];
     };
 
-    AppendStick( m_pImpl->LeftStickAction, m_pImpl->PreviousLeftStick,
-                 INPUT_XBOX_STICK_LEFT_X, INPUT_XBOX_STICK_LEFT_Y, TRUE );
-    AppendStick( m_pImpl->RightStickAction, m_pImpl->PreviousRightStick,
-                 INPUT_XBOX_STICK_RIGHT_X, INPUT_XBOX_STICK_RIGHT_Y, FALSE );
+    xbool LeftStickActive = FALSE;
+    xbool RightStickActive = FALSE;
+    AppendStick( m_pImpl->LeftStickAction, m_pImpl->LeftHandPath,
+                 m_pImpl->PreviousLeftStick,
+                 INPUT_XBOX_STICK_LEFT_X, INPUT_XBOX_STICK_LEFT_Y, TRUE,
+                 LeftStickActive );
+    AppendStick( m_pImpl->RightStickAction, m_pImpl->RightHandPath,
+                 m_pImpl->PreviousRightStick,
+                 INPUT_XBOX_STICK_RIGHT_X, INPUT_XBOX_STICK_RIGHT_Y, FALSE,
+                 RightStickActive );
     AppendTrigger( m_pImpl->LeftTriggerAction, m_pImpl->PreviousLeftTrigger,
                    INPUT_XBOX_L_TRIGGER );
     AppendTrigger( m_pImpl->RightTriggerAction, m_pImpl->PreviousRightTrigger,
@@ -1503,6 +1608,20 @@ void VulkanSession::CaptureInput( ::input_event_buffer& Events )
                    INPUT_XBOX_BTN_R_STICK );
     AppendBoolean( m_pImpl->LeftMenuAction, m_pImpl->PreviousLeftMenu,
                    INPUT_XBOX_BTN_START );
+
+#if defined(TARGET_ANDROID)
+    static u32 InputTraceFrame = 0;
+    if( (++InputTraceFrame % 90u) == 0u )
+    {
+        __android_log_print( ANDROID_LOG_INFO, "A51VR",
+            "left_stick action x=%.3f y=%.3f input_active=%d focused=%d session=%d",
+            m_pImpl->PreviousLeftStick[0],
+            m_pImpl->PreviousLeftStick[1],
+            LeftStickActive ? 1 : 0,
+            (m_pImpl->SessionState == XR_SESSION_STATE_FOCUSED) ? 1 : 0,
+            m_pImpl->SessionRunning ? 1 : 0 );
+    }
+#endif
 }
 
 void VulkanSession::CancelFrame( void )
@@ -1880,6 +1999,87 @@ xbool VulkanSession::GetEyeView( u32 Eye, eye_view& View ) const
                     View.FovLeft, View.FovRight, View.FovUp, View.FovDown );
         LoggedEye[Eye] = TRUE;
     }
+    return TRUE;
+}
+
+xbool VulkanSession::GetControllerPose( u32 Hand,
+                                        controller_pose& Pose ) const
+{
+    Pose.Valid = FALSE;
+    if( !m_pImpl || !m_pImpl->InputActionsReady ||
+        !m_pImpl->SessionRunning || !m_pImpl->FrameBegun || Hand > 1 )
+    {
+        return FALSE;
+    }
+
+    const XrAction Action = (Hand == 0)
+                          ? m_pImpl->LeftGripPoseAction
+                          : m_pImpl->RightGripPoseAction;
+    const XrSpace HandSpace = (Hand == 0)
+                            ? m_pImpl->LeftGripPoseSpace
+                            : m_pImpl->RightGripPoseSpace;
+    const XrPath HandPath = (Hand == 0)
+                          ? m_pImpl->LeftHandPath
+                          : m_pImpl->RightHandPath;
+    if( !Action || !HandSpace || !HandPath || !m_pImpl->Space )
+        return FALSE;
+
+    XrActionStateGetInfo StateInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+    StateInfo.action = Action;
+    StateInfo.subactionPath = HandPath;
+    XrActionStatePose State{ XR_TYPE_ACTION_STATE_POSE };
+    if( XR_FAILED( xrGetActionStatePose( m_pImpl->Session,
+                                         &StateInfo, &State ) ) ||
+        !State.isActive )
+    {
+        return FALSE;
+    }
+
+    XrSpaceLocation Location{ XR_TYPE_SPACE_LOCATION };
+    if( XR_FAILED( xrLocateSpace( HandSpace, m_pImpl->Space,
+                                  m_pImpl->PreparedFrameState.predictedDisplayTime,
+                                  &Location ) ) ||
+        !( Location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT ) )
+    {
+        return FALSE;
+    }
+
+    /* Express the grip pose relative to the current head pose. The game
+     * camera is anchored at the avatar's head and uses the same current HMD
+     * orientation, so this avoids carrying the OpenXR session-start origin
+     * into player-space (which can be stale after leaving the front end). */
+    XrPosef HeadPose = m_pImpl->Views[0].pose;
+    if( m_pImpl->Views.size() > 1 )
+    {
+        HeadPose.position.x =
+            ( m_pImpl->Views[0].pose.position.x +
+              m_pImpl->Views[1].pose.position.x ) * 0.5f;
+        HeadPose.position.y =
+            ( m_pImpl->Views[0].pose.position.y +
+              m_pImpl->Views[1].pose.position.y ) * 0.5f;
+        HeadPose.position.z =
+            ( m_pImpl->Views[0].pose.position.z +
+              m_pImpl->Views[1].pose.position.z ) * 0.5f;
+    }
+    const XrPosef RelativeHand = RelativePose( HeadPose, Location.pose );
+    Pose.Position[0] = RelativeHand.position.x;
+    Pose.Position[1] = RelativeHand.position.y;
+    Pose.Position[2] = RelativeHand.position.z;
+    if( Location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT )
+    {
+        Pose.Orientation[0] = RelativeHand.orientation.x;
+        Pose.Orientation[1] = RelativeHand.orientation.y;
+        Pose.Orientation[2] = RelativeHand.orientation.z;
+        Pose.Orientation[3] = RelativeHand.orientation.w;
+    }
+    else
+    {
+        Pose.Orientation[0] = 0.0f;
+        Pose.Orientation[1] = 0.0f;
+        Pose.Orientation[2] = 0.0f;
+        Pose.Orientation[3] = 1.0f;
+    }
+    Pose.Valid = TRUE;
     return TRUE;
 }
 

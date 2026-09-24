@@ -10,6 +10,9 @@
 //=========================================================================
 
 #include "Player.hpp"
+#if defined( A51_ENABLE_OPENXR )
+#include "VR/VRArmIK.hpp"
+#endif
 #include "FX/fx_Mgr.hpp"
 #include "Objects/WeaponBBG.hpp"
 #include "Objects/WeaponMutation.hpp"
@@ -703,6 +706,26 @@ void player::AttachWeapon( void )
     new_weapon* pWeapon = GetCurrentWeaponPtr();
     if ( pWeapon )
     {
+#if defined( A51_ENABLE_OPENXR )
+        /* Place the pistol at the right wrist as soon as the animation pose
+         * updates. GetBonesForRender refreshes it again after controller IK. */
+        if( IsVrAvatarMode() &&
+            ( m_CurrentWeaponItem == INVEN_WEAPON_DESERT_EAGLE ) &&
+            m_Loco.IsAnimLoaded() )
+        {
+            const s32 HandBone = m_Loco.m_Player.GetBoneIndex(
+                a51::xr::kMultiplayerHandBones[1] );
+            if( HandBone >= 0 )
+            {
+                matrix4 HandL2W = m_Loco.m_Player.GetBoneL2W( HandBone );
+                HandL2W.PreTranslate(
+                    m_Loco.m_Player.GetBoneBindPosition( HandBone ) );
+                OnTransformWeapon( HandL2W );
+            }
+            pWeapon->SetZone1( GetZone1() );
+            return;
+        }
+#endif
         radian3 Rot( m_AnimPlayer.GetPitch() , m_AnimPlayer.GetYaw(), m_AnimPlayer.GetRoll() );
         vector3 Pos( m_AnimPlayer.GetPosition() );
 

@@ -11,6 +11,15 @@
 #include "NetworkMgr/GameMgr.hpp"
 #include "PerceptionMgr/PerceptionMgr.hpp"
 
+#if defined( A51_ENABLE_OPENXR )
+#include "VR/XRSession.hpp"
+#if defined(TARGET_ANDROID)
+#include <android/log.h>
+#endif
+extern xbool g_XRGameFrameBridge;
+extern a51::xr::VulkanSession g_XRSession;
+#endif
+
 //=========================================================================
 
 static const f32 ZERO = 0.00001f;
@@ -374,6 +383,20 @@ void player::OnRidingPlatformMove( const vector3& NewPos, radian DeltaYaw )
 
 void player::UpdateMovement( f32 DeltaTime )
 {
+#if defined( A51_ENABLE_OPENXR ) && defined(TARGET_ANDROID)
+    static u32 MovementTraceFrame = 0;
+    const xbool TraceVRMovement = IsVrAvatarMode() &&
+                                  ( (++MovementTraceFrame % 90u) == 0u );
+    if( TraceVRMovement )
+    {
+        __android_log_print( ANDROID_LOG_INFO, "A51VR",
+            "movement input pad=%d f=%.3f s=%.3f dead=%d active=%d locked=%d cinema=%d",
+            m_ActivePlayerPad, m_MoveInput.GamepadForward,
+            m_MoveInput.GamepadStrafe, IsDead() ? 1 : 0,
+            m_bActivePlayer ? 1 : 0, m_LockedView.IsActive() ? 1 : 0,
+            m_CinemaController.IsActive() ? 1 : 0 );
+    }
+#endif
     if( !x_isvalid( DeltaTime ) || (DeltaTime < 0.0f) )
     {
         ASSERT( FALSE );
@@ -404,6 +427,38 @@ void player::UpdateMovement( f32 DeltaTime )
     vector3 ViewZ( 0.0f, 0.0f, 1.0f );
     ViewX.RotateY( m_Yaw );
     ViewZ.RotateY( m_Yaw );
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() )
+    {
+        a51::xr::eye_view XREye{};
+        if( g_XRSession.GetEyeView( 0, XREye ) )
+        {
+            quaternion HeadRotation( -XREye.Orientation[0],
+                                      XREye.Orientation[1],
+                                     -XREye.Orientation[2],
+                                      XREye.Orientation[3] );
+            HeadRotation.Normalize();
+
+            matrix4 MovementToWorld;
+            MovementToWorld.Identity();
+            MovementToWorld.RotateY( m_Yaw );
+            matrix4 HeadLocal;
+            HeadLocal.Identity();
+            HeadLocal.SetRotation( HeadRotation );
+            MovementToWorld = MovementToWorld * HeadLocal;
+
+            vector3 HeadForward =
+                MovementToWorld.RotateVector( vector3( 0.0f, 0.0f, 1.0f ) );
+            HeadForward.GetY() = 0.0f;
+            if( HeadForward.SafeNormalize() )
+            {
+                ViewZ = HeadForward;
+                ViewX.Set( HeadForward.GetZ(), 0.0f, -HeadForward.GetX() );
+            }
+        }
+    }
+#endif
+    /* Flat movement basis: VR head pitch and roll never add vertical movement. */
 
     CalculateRigOffset( DeltaTime );
     EvaluateMovementSpeeds( DeltaTime );
@@ -418,6 +473,16 @@ void player::UpdateMovement( f32 DeltaTime )
     }
 
     m_DeltaPos = MovementVelocity * DeltaTime;
+
+#if defined( A51_ENABLE_OPENXR ) && defined(TARGET_ANDROID)
+    if( TraceVRMovement )
+    {
+        __android_log_print( ANDROID_LOG_INFO, "A51VR",
+            "movement output speed f=%.3f s=%.3f delta=%.3f,%.3f,%.3f yaw=%.3f",
+            m_fForwardSpeed, m_fStrafeSpeed,
+            m_DeltaPos.GetX(), m_DeltaPos.GetY(), m_DeltaPos.GetZ(), m_Yaw );
+    }
+#endif
 
     if( !m_bInTurret )
     {
@@ -978,7 +1043,8 @@ void player::Teleport( const vector3& Position,
 
 xbool player::IsAvatar( void )
 {
-    xbool bRenderAvatar = !m_bActivePlayer
+    xbool bRenderAvatar = IsVrAvatarMode()
+                          || !m_bActivePlayer
                           || (m_CurrentAnimState == ANIM_STATE_FALLING_TO_DEATH)
                           || (m_LocalSlot == -1);
 
@@ -993,11 +1059,24 @@ xbool player::IsAvatar( void )
     return bRenderAvatar;
 }
 
+xbool player::IsVrAvatarMode( void ) const
+{
+#if defined( A51_ENABLE_OPENXR ) && !defined( X_EDITOR )
+    return g_XRGameFrameBridge && m_bActivePlayer &&
+           !GameMgr.IsGameMultiplayer();
+#else
+    return FALSE;
+#endif
+}
+
 xbool player::UsingLoco( void )
 {
 #if defined( X_EDITOR )
     return( FALSE );
 #else
+    if( IsVrAvatarMode() )
+        return TRUE;
+
     // SB: Use loco so skin geom is setup for bbox collision detection in MP
     return ( GameMgr.IsGameMultiplayer() );
 #endif

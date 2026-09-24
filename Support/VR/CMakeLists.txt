@@ -50,6 +50,8 @@ a51_add_project( A51OpenXR STATIC
         "${CMAKE_CURRENT_LIST_DIR}/XRRuntime.hpp"
         "${CMAKE_CURRENT_LIST_DIR}/XRSession.cpp"
         "${CMAKE_CURRENT_LIST_DIR}/XRSession.hpp"
+        "${CMAKE_CURRENT_LIST_DIR}/VRArmIK.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/VRArmIK.hpp"
         ${A51_OPENXR_PLATFORM_SOURCES}
     DEPENDENCIES
         ${A51_OPENXR_DEPENDENCIES}

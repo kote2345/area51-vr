@@ -542,6 +542,12 @@ void player::OnInit( void )
     if( UsingLoco() )
     {
         PrepPlayerAvatar();
+
+        /* Multiplayer normally selects exactly one avatar mesh via the
+         * network skin packet. Campaign VR has no packet, so use its default
+         * human multiplayer skin explicitly instead of drawing every variant. */
+        if( IsVrAvatarMode() )
+            net_SetSkin( SKIN_HAZMAT_0 );
     }
 
     // Arms
