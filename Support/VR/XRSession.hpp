@@ -37,8 +37,6 @@ struct vulkan_frame_info
 struct eye_view
 {
     f32 Position[3];
-    /* HMD position relative to the yaw-aligned tracking origin, in meters. */
-    f32 TrackingPosition[3];
     f32 Orientation[4];
     f32 FovLeft;
     f32 FovRight;

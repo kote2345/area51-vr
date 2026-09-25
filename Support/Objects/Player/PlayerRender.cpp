@@ -120,27 +120,28 @@ static xbool GetVRHandTarget( const player& Player,
     if( !g_XRSession.GetControllerPose( Hand, Pose ) || !Pose.Valid )
         return FALSE;
 
-    /* Map both the HMD and controller from the stable yaw-aligned tracking
-     * origin into the avatar's world frame. Subtracting the tracked HMD offset
-     * anchors the origin to the current in-game eye point without rotating the
-     * hands with head pitch or roll. */
+    /* Controller locations are head-relative. Transform them with the same
+     * HMD orientation and eye position as the rendered camera so turning the
+     * head does not drag the avatar arms away from the controller poses. */
+    matrix4 TrackingToWorld = Player.GetL2W();
+    TrackingToWorld.SetTranslation( Player.GetRenderView().GetPosition() );
     a51::xr::eye_view XREye{};
-    if( !g_XRSession.GetEyeView( 0, XREye ) )
-        return FALSE;
-
-    const vector3 HeadTrackingOffset( -XREye.TrackingPosition[0] * 100.0f,
-                                       XREye.TrackingPosition[1] * 100.0f,
-                                      -XREye.TrackingPosition[2] * 100.0f );
-    const vector3 HandTrackingOffset( -Pose.Position[0] * 100.0f,
-                                       Pose.Position[1] * 100.0f,
-                                      -Pose.Position[2] * 100.0f );
-    matrix4 PlayerToWorld = Player.GetL2W();
-    PlayerToWorld.ClearTranslation();
-    PlayerToWorld.ClearScale();
-    const vector3 TrackingOriginWorld = Player.GetRenderView().GetPosition() -
-        PlayerToWorld.RotateVector( HeadTrackingOffset );
-    Target = TrackingOriginWorld +
-             PlayerToWorld.RotateVector( HandTrackingOffset );
+    if( g_XRSession.GetEyeView( 0, XREye ) )
+    {
+        quaternion HeadRotation( -XREye.Orientation[0],
+                                   XREye.Orientation[1],
+                                  -XREye.Orientation[2],
+                                   XREye.Orientation[3] );
+        HeadRotation.Normalize();
+        matrix4 HeadLocal;
+        HeadLocal.Identity();
+        HeadLocal.SetRotation( HeadRotation );
+        TrackingToWorld = TrackingToWorld * HeadLocal;
+    }
+    const vector3 TrackingOffset( -Pose.Position[0] * 100.0f,
+                                   Pose.Position[1] * 100.0f,
+                                  -Pose.Position[2] * 100.0f );
+    Target = TrackingToWorld * TrackingOffset;
 
     quaternion ControllerLocal( -Pose.Orientation[0],
                                   Pose.Orientation[1],
@@ -150,7 +151,10 @@ static xbool GetVRHandTarget( const player& Player,
     matrix4 ControllerRotation;
     ControllerRotation.Identity();
     ControllerRotation.SetRotation( ControllerLocal );
-    TargetRotation = PlayerToWorld * ControllerRotation;
+    matrix4 TrackingToWorldRotation = TrackingToWorld;
+    TrackingToWorldRotation.ClearTranslation();
+    TrackingToWorldRotation.ClearScale();
+    TargetRotation = TrackingToWorldRotation * ControllerRotation;
     TargetRotation.ClearTranslation();
     TargetRotation.ClearScale();
     return TRUE;
