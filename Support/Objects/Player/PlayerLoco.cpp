@@ -375,6 +375,16 @@ void player_loco::InitAnimIndices( void )
             const char* pAnim = GetMPAnimName( (mp_anim)iAnim );
             s32 AnimIndex = pAnimGroup->GetAnimIndex( xfs( "%s_%s", pWeapon, pAnim ) );
 
+            // Campaign military NPC groups share locomotion clips between
+            // weapons instead of storing RFL/PST/DUL variants. Use those
+            // shared clips when the requested multiplayer clip is absent.
+            if( AnimIndex == -1 )
+                AnimIndex = pAnimGroup->GetAnimIndex( pAnim );
+
+            // The military SMP set calls its crouch clips CROUCHAIM_*.
+            if( ( AnimIndex == -1 ) && ( x_strncmp( pAnim, "CROUCH_", 7 ) == 0 ) )
+                AnimIndex = pAnimGroup->GetAnimIndex( xfs( "CROUCHAIM_%s", pAnim + 7 ) );
+
             // Must be present for ghosts!
             if( m_bGhostMode )
             {
@@ -420,6 +430,15 @@ void player_loco::InitAnimIndices( void )
         anim_type   SecondaryAnimType  = GetMPShootSecondaryAnimType( InvenWeapon );
         const char* pSecondaryAnimName = GetMPShootSecondaryAnimName( InvenWeapon );
         s32         SecondaryAnimIndex = pAnimGroup->GetAnimIndex( pSecondaryAnimName );
+
+        // The first-level military animation set only has the standard SMP
+        // reload and firing clips, shared by its weapon-specific actions.
+        if( ReloadAnimIndex == -1 )
+            ReloadAnimIndex = pAnimGroup->GetAnimIndex( "SMP_RELOAD" );
+        if( PrimaryAnimIndex == -1 )
+            PrimaryAnimIndex = pAnimGroup->GetAnimIndex( "SMP_SHOOT" );
+        if( SecondaryAnimIndex == -1 )
+            SecondaryAnimIndex = pAnimGroup->GetAnimIndex( "SMP_SHOOT" );
 
 #ifdef X_DEBUG
         // Must be present for ghosts!

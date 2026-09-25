@@ -543,11 +543,54 @@ void player::OnInit( void )
     {
         PrepPlayerAvatar();
 
-        /* Multiplayer normally selects exactly one avatar mesh via the
-         * network skin packet. Campaign VR has no packet, so use its default
-         * human multiplayer skin explicitly instead of drawing every variant. */
+        /* Use the first campaign level's military NPC as the VR body. It has
+         * the full hand and finger rig; the multiplayer bind mesh omits those
+         * joints. The level loader has already registered these resources. */
         if( IsVrAvatarMode() )
-            net_SetSkin( SKIN_SPECFOR_0 );
+        {
+            m_SkinInst.SetUpSkinGeom( "NPC_MIL_HAZMAT_01_LEVELBLUE_SL0-1.SKINGEOM" );
+            m_SkinInst.SetVMeshMask( 0 );
+            m_SkinInst.SetVMeshBit( "MESH_BODY_HazMat_L0", TRUE );
+            m_SkinInst.SetVMeshBit( "MESH_BODY_HazMat_L1", TRUE );
+            m_SkinInst.SetVMeshBit( "MESH_BODY_HazMat_L2", TRUE );
+            m_SkinInst.SetVMeshBit( "MESH_GEAR_HazMat_B_L0", TRUE );
+            m_SkinInst.SetVMeshBit( "MESH_HEAD_Helmet_L0", TRUE );
+            m_SkinInst.SetVMeshBit( "MESH_HEAD_Helmet_L1", TRUE );
+            m_SkinInst.SetVMeshBit( "MESH_HEAD_Helmet_L2", TRUE );
+            m_SkinInst.SetVMeshBit( "MESH_FACEINHELMET_Crispy_L0", TRUE );
+            m_SkinInst.SetVMeshBit( "MESH_FACEINHELMET_Crispy_L1", TRUE );
+            m_SkinInst.SetVMeshBit( "MESH_FACEINHELMET_Crispy_L2", TRUE );
+            m_SkinInst.SetVirtualTexture( 0 );
+
+            geom* pVrAvatarGeom = m_SkinInst.GetGeom();
+            if( pVrAvatarGeom )
+            {
+                LOG_MESSAGE( "player::OnInit",
+                             "First-level VR soldier loaded: meshes=%d bones=%d mask=%08x body=%d gear=%d head=%d face=%d",
+                             pVrAvatarGeom->m_nVirtualMeshes,
+                             m_SkinInst.GetSkinGeom()->m_nBones,
+                             m_SkinInst.GetVMeshMask().VMeshMask,
+                             pVrAvatarGeom->GetVMeshIndex( "MESH_BODY_HazMat_L0" ),
+                             pVrAvatarGeom->GetVMeshIndex( "MESH_GEAR_HazMat_B_L0" ),
+                             pVrAvatarGeom->GetVMeshIndex( "MESH_HEAD_Helmet_L0" ),
+                             pVrAvatarGeom->GetVMeshIndex( "MESH_FACEINHELMET_Crispy_L0" ) );
+            }
+
+            m_hAnimGroup.SetName( "NPC_MILITARY_SMP.ANIM" );
+
+            if( m_SkinInst.GetGeom() && m_hAnimGroup.GetPointer() && m_pLoco )
+            {
+                m_pLoco->OnInit( m_SkinInst.GetGeom(), m_hAnimGroup.GetName(), GetGuid() );
+                InitLoco();
+            }
+            else
+            {
+                LOG_ERROR( "player::player",
+                           "First-level soldier avatar resources are unavailable; keeping multiplayer avatar" );
+                PrepPlayerAvatar();
+                net_SetSkin( SKIN_SPECFOR_0 );
+            }
+        }
     }
 
     // Arms
