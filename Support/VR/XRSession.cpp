@@ -264,6 +264,7 @@ struct VulkanSession::Impl
     XrCompositionLayerProjection ProjectionLayer{
         XR_TYPE_COMPOSITION_LAYER_PROJECTION };
     XrCompositionLayerQuad QuadLayer{ XR_TYPE_COMPOSITION_LAYER_QUAD };
+    XrPosef QuadPose{};
     XrActionSet InputActionSet = XR_NULL_HANDLE;
     XrAction LeftStickAction = XR_NULL_HANDLE;
     XrAction RightStickAction = XR_NULL_HANDLE;
@@ -295,6 +296,7 @@ struct VulkanSession::Impl
     f32 PreviousLeftStick[2] = { 0.0f, 0.0f };
     f32 PreviousRightStick[2] = { 0.0f, 0.0f };
     xbool UseQuadLayer = FALSE;
+    xbool QuadPoseValid = FALSE;
     /* Same tracking-origin model as the working Simpsons OpenXR path:
      * capture a yaw-only centre between the two eyes, then compose every
      * render eye from its pose relative to that stable origin. */
@@ -1779,8 +1781,40 @@ xbool VulkanSession::PrepareQuadFrame( const vulkan_frame_info& FrameInfo,
         m_pImpl->QuadLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
         m_pImpl->QuadLayer.space = m_pImpl->Space;
         m_pImpl->QuadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        m_pImpl->QuadLayer.pose.orientation.w = 1.0f;
-        m_pImpl->QuadLayer.pose.position.z = -DistanceMeters;
+        if( m_pImpl->QuadPoseValid )
+        {
+            m_pImpl->QuadLayer.pose = m_pImpl->QuadPose;
+        }
+        else if( !m_pImpl->Views.empty() )
+        {
+            const XrPosef& HeadPose = m_pImpl->Views[0].pose;
+            m_pImpl->QuadLayer.pose.orientation = HeadPose.orientation;
+            for( const XrView& View : m_pImpl->Views )
+            {
+                m_pImpl->QuadLayer.pose.position.x += View.pose.position.x;
+                m_pImpl->QuadLayer.pose.position.y += View.pose.position.y;
+                m_pImpl->QuadLayer.pose.position.z += View.pose.position.z;
+            }
+            const f32 InvViewCount = 1.0f / (f32)m_pImpl->Views.size();
+            m_pImpl->QuadLayer.pose.position.x *= InvViewCount;
+            m_pImpl->QuadLayer.pose.position.y *= InvViewCount;
+            m_pImpl->QuadLayer.pose.position.z *= InvViewCount;
+
+            const XrQuaternionf& Q = HeadPose.orientation;
+            const f32 ForwardX = -2.0f * (Q.x * Q.z + Q.w * Q.y);
+            const f32 ForwardY = -2.0f * (Q.y * Q.z - Q.w * Q.x);
+            const f32 ForwardZ =  2.0f * (Q.x * Q.x + Q.y * Q.y) - 1.0f;
+            m_pImpl->QuadLayer.pose.position.x += ForwardX * DistanceMeters;
+            m_pImpl->QuadLayer.pose.position.y += ForwardY * DistanceMeters;
+            m_pImpl->QuadLayer.pose.position.z += ForwardZ * DistanceMeters;
+        }
+        else
+        {
+            m_pImpl->QuadLayer.pose.orientation.w = 1.0f;
+            m_pImpl->QuadLayer.pose.position.z = -DistanceMeters;
+        }
+        m_pImpl->QuadPose = m_pImpl->QuadLayer.pose;
+        m_pImpl->QuadPoseValid = TRUE;
         m_pImpl->QuadLayer.size.width = WidthMeters;
         m_pImpl->QuadLayer.size.height = HeightMeters;
         m_pImpl->QuadLayer.subImage.swapchain = Swapchain.Handle;
@@ -1969,11 +2003,8 @@ xbool VulkanSession::GetEyeView( u32 Eye, eye_view& View ) const
      * rotated with RelativeEye.orientation by the game camera composition. */
     /* Area 51's view space is left-handed relative to OpenXR's horizontal
      * axis: +X is Camera Left here, while +X is Camera Right in OpenXR.
-     * Keep the OpenXR projection/layer in its native convention, but map the
-     * eye baseline into the game camera convention before RenderGame composes
-     * the eye camera.  Without this sign change the left image is rendered
-     * from the right-eye position and vice versa; the compositor then places
-     * those images using the correct OpenXR eye poses. */
+     * Map the eye baseline into the game camera convention before RenderGame
+     * composes each eye camera. */
     View.Position[0] = (Eye == 0) ? 0.032f : -0.032f;
     View.Position[1] = 0.0f;
     View.Position[2] = 0.0f;
@@ -2198,6 +2229,7 @@ xbool VulkanSession::PrepareStereoFrameInternal( const vulkan_frame_info& LeftFr
         static_cast<u32>( m_pImpl->ProjectionViews.size() );
     m_pImpl->ProjectionLayer.views = m_pImpl->ProjectionViews.data();
     m_pImpl->UseQuadLayer = FALSE;
+    m_pImpl->QuadPoseValid = FALSE;
         return TRUE;
 }
 

@@ -228,7 +228,9 @@ f32 ui_viewport::GetHudScale( const irect& ScreenViewport ) const
     if( ScreenViewport.GetHeight() <= 0 )
         return 1.0f;
 
-    return ((f32)ScreenViewport.GetHeight() / (f32)CONTENT_HEIGHT) * m_HudUserScale;
+    const f32 WidthScale = (f32)ScreenViewport.GetWidth() / (f32)CONTENT_WIDTH;
+    const f32 HeightScale = (f32)ScreenViewport.GetHeight() / (f32)CONTENT_HEIGHT;
+    return MIN( WidthScale, HeightScale ) * m_HudUserScale;
 }
 
 //------------------------------------------------------------------------------
@@ -820,8 +822,10 @@ ui_renderer::ui_renderer( void ) :
     m_PreparedVertices    ( 0 ),
     m_PreparedIndices     ( 0 ),
     m_vertexShader        (),
+    m_stereoVertexShader  (),
     m_pixelShader         (),
     m_DrawUniformSlot     ( 0xffffffffu ),
+    m_StereoDrawUniformSlot( 0xffffffffu ),
     m_textureSlot         ( 0xffffffffu ),
     m_whiteTexture        (),
     m_pipelines           (),
@@ -829,9 +833,15 @@ ui_renderer::ui_renderer( void ) :
     m_bPrepared           ( FALSE ),
     m_bStereoOverlay      ( FALSE ),
     m_pStereoOverlayTarget( NULL ),
+    m_bOutputSizeOverride ( FALSE ),
     m_bStagesRegistered   ( FALSE ),
     m_isInitialized        ( FALSE )
 {
+    m_StereoClipTransform[0] = 1.0f;
+    m_StereoClipTransform[1] = 1.0f;
+    m_StereoClipTransform[2] = 0.0f;
+    m_StereoClipTransform[3] = 0.0f;
+    m_HudElementScale = 1.0f;
 }
 
 //------------------------------------------------------------------------------
@@ -878,13 +888,16 @@ void ui_renderer::Kill( void )
         rstate_DestroySampler( m_samplers[i] );
 
     shader_Destroy( m_pixelShader );
+    shader_Destroy( m_stereoVertexShader );
     shader_Destroy( m_vertexShader );
 
     m_DrawUniformSlot  = 0xffffffffu;
+    m_StereoDrawUniformSlot = 0xffffffffu;
     m_textureSlot      = 0xffffffffu;
     m_PreparedVertices = 0;
     m_PreparedIndices  = 0;
     m_bPrepared        = FALSE;
+    m_bOutputSizeOverride = FALSE;
     m_isInitialized     = FALSE;
 }
 
@@ -899,6 +912,9 @@ xbool ui_renderer::IsInitialized( void ) const
 
 void ui_renderer::RefreshViewport( void )
 {
+    if( m_bOutputSizeOverride )
+        return;
+
     s32 Width;
     s32 Height;
     eng_GetRes( Width, Height );
@@ -909,6 +925,7 @@ void ui_renderer::RefreshViewport( void )
 
 void ui_renderer::SetOutputSize( s32 Width, s32 Height )
 {
+    m_bOutputSizeOverride = TRUE;
     m_Viewport.SetOutputSize( Width, Height );
 }
 
@@ -1144,8 +1161,40 @@ void ui_renderer::SetStereoOverlayTarget( const rtarget* pTarget )
     m_pStereoOverlayTarget = pTarget;
 }
 
+//------------------------------------------------------------------------------
+
+void ui_renderer::SetStereoClipTransforms( f32 Scale0, f32 Center0,
+                                           f32 Scale1, f32 Center1 )
+{
+    m_StereoClipTransform[0] = x_isvalid( Scale0 ) ? Scale0 : 1.0f;
+    m_StereoClipTransform[1] = x_isvalid( Scale1 ) ? Scale1 : 1.0f;
+    m_StereoClipTransform[2] = x_isvalid( Center0 ) ? Center0 : 0.0f;
+    m_StereoClipTransform[3] = x_isvalid( Center1 ) ? Center1 : 0.0f;
+}
+
+//------------------------------------------------------------------------------
+
+void ui_renderer::SetHudElementScale( f32 Scale )
+{
+    if( !x_isvalid( Scale ) )
+        Scale = 1.0f;
+    m_HudElementScale = x_clamp( Scale, 0.5f, 1.0f );
+}
+
 void ui_renderer::ExecuteFrameUI( void )
 {
+#if defined( A51_ENABLE_OPENXR )
+    static u32 XRUITraceFrames = 0;
+    const xbool bTraceStereoUI = m_bStereoOverlay && (XRUITraceFrames < 5);
+    if( bTraceStereoUI )
+    {
+        ++XRUITraceFrames;
+        x_DebugMsg( "OpenXR UI trace: prepared=%d commands=%d stereo=%d target=%p layers=%u\n",
+                    m_bPrepared, m_DrawList.GetCommandCount(),
+                    m_bStereoOverlay, m_pStereoOverlayTarget,
+                    m_pStereoOverlayTarget ? m_pStereoOverlayTarget->Desc.LayerCount : 0 );
+    }
+#endif
     if( !m_bStereoOverlay )
     {
         Execute();
@@ -1172,8 +1221,18 @@ void ui_renderer::ExecuteFrameUI( void )
         Pass.ViewMask = 0x3u;
         if( rtarget_BeginPass( Pass ) )
         {
+#if defined( A51_ENABLE_OPENXR )
+            if( bTraceStereoUI )
+                x_DebugMsg( "OpenXR UI trace: overlay pass active current=%p viewMask=0x%x\n",
+                            rtarget_GetCurrentTarget( 0 ), rtarget_GetCurrentViewMask() );
+#endif
             Execute( FALSE );
             rtarget_EndPass();
+        }
+        else
+        {
+            x_DebugMsg( "OpenXR UI trace: stereo overlay target pass failed (layers=%u viewMask=0x3)\n",
+                        m_pStereoOverlayTarget->Desc.LayerCount );
         }
     }
     else
@@ -1242,8 +1301,11 @@ void ui_renderer::Execute( xbool KeepPrepared )
     if( !m_isInitialized || !m_bPrepared )
         return;
 
-    const xbool bOwnsBackBufferPass = !rtarget_IsBackBufferPassActive();
-    if( !rtarget_IsBackBufferPassActive() )
+    /* ExecuteFrameUI may already have opened a pass on the OpenXR array
+     * target. Reuse any active pass; only create a window backbuffer pass
+     * when no render target is active. */
+    const xbool bOwnsRenderPass = (rtarget_GetCurrentCount() == 0);
+    if( bOwnsRenderPass )
     {
         rtarget_EndPass();
 
@@ -1269,7 +1331,7 @@ void ui_renderer::Execute( xbool KeepPrepared )
         !rbuffer_BindIndex( m_indexBuffer, RBUFFER_INDEX_FORMAT_U32 ) )
     {
         m_bPrepared = FALSE;
-        if( bOwnsBackBufferPass )
+        if( bOwnsRenderPass )
             rtarget_EndPass();
         return;
     }
@@ -1317,8 +1379,20 @@ void ui_renderer::Execute( xbool KeepPrepared )
                 Constants.InverseLogicalSize[1] = 1.0f / LogicalBounds.GetHeight();
             }
 
+            for( s32 Eye = 0; Eye < 4; ++Eye )
+                Constants.StereoClipTransform[Eye] = m_StereoClipTransform[Eye];
+            Constants.HudSettings[0] =
+                (Command.CoordinateSpace == UI_COORDINATE_SPACE_HUD)
+                ? m_HudElementScale : 1.0f;
+            Constants.HudSettings[1] = 0.0f;
+            Constants.HudSettings[2] = 0.0f;
+            Constants.HudSettings[3] = 0.0f;
+
+            const u32 DrawUniformSlot = m_bStereoOverlay
+                                      ? m_StereoDrawUniformSlot
+                                      : m_DrawUniformSlot;
             if( !shader_PushUniformData( SHADER_STAGE_VERTEX,
-                                         m_DrawUniformSlot,
+                                         DrawUniformSlot,
                                          &Constants,
                                          sizeof(Constants) ) )
             {
@@ -1391,7 +1465,7 @@ void ui_renderer::Execute( xbool KeepPrepared )
 
     if( !KeepPrepared )
         m_bPrepared = FALSE;
-    if( bOwnsBackBufferPass )
+    if( bOwnsRenderPass )
         rtarget_EndPass();
 }
 
@@ -1400,14 +1474,22 @@ void ui_renderer::Execute( xbool KeepPrepared )
 xbool ui_renderer::LoadShaders( void )
 {
     shader_LoadFromEcs( m_vertexShader, "ui_vs.vs.ecs" );
+    shader_LoadFromEcs( m_stereoVertexShader, "ui_multiview_vs.vs.ecs" );
     shader_LoadFromEcs( m_pixelShader,  "ui_ps.ps.ecs" );
 
-    if( !m_vertexShader || !m_pixelShader )
+    if( !m_vertexShader || !m_stereoVertexShader || !m_pixelShader )
         return FALSE;
 
     if( !shader_FindUniformSlot( m_vertexShader,
                                  "cbUIDraw",
                                  m_DrawUniformSlot ) )
+    {
+        return FALSE;
+    }
+
+    if( !shader_FindUniformSlot( m_stereoVertexShader,
+                                 "cbUIDraw",
+                                 m_StereoDrawUniformSlot ) )
     {
         return FALSE;
     }
@@ -1621,7 +1703,9 @@ xbool ui_renderer::BuildPipelineDesc( render_pipeline_desc& Desc,
     };
 
     Desc = render_pipeline_desc();
-    Desc.Shader.pVertexShader     = &m_vertexShader;
+    Desc.Shader.pVertexShader     = m_bStereoOverlay
+                                  ? &m_stereoVertexShader
+                                  : &m_vertexShader;
     Desc.Shader.pPixelShader      = &m_pixelShader;
     Desc.Shader.pVertexBuffers    = &VertexBuffer;
     Desc.Shader.VertexBufferCount = 1;

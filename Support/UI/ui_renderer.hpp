@@ -277,6 +277,9 @@ public:
     void            SetOutputSize      ( s32 Width, s32 Height );
     void            SetStereoOverlayEnabled( xbool Enabled );
     void            SetStereoOverlayTarget( const rtarget* pTarget );
+    void            SetStereoClipTransforms( f32 Scale0, f32 Center0,
+                                              f32 Scale1, f32 Center1 );
+    void            SetHudElementScale( f32 Scale );
     void            ExecuteFrameUI     ( void );
     void            SetUserScale       ( f32 Scale );
     void            SetHudUserScale    ( f32 Scale );
@@ -344,6 +347,8 @@ protected:
     {
         f32 LogicalOrigin[2];
         f32 InverseLogicalSize[2];
+        f32 StereoClipTransform[4];
+        f32 HudSettings[4];
     };
 
     xbool           LoadShaders        ( void );
@@ -376,8 +381,10 @@ protected:
     s32              m_PreparedIndices;
 
     shader           m_vertexShader;
+    shader           m_stereoVertexShader;
     shader           m_pixelShader;
     u32              m_DrawUniformSlot;
+    u32              m_StereoDrawUniformSlot;
     u32              m_textureSlot;
     rstate_sampler   m_samplers[UI_SAMPLER_COUNT];
     vram_texture     m_whiteTexture;
@@ -388,6 +395,9 @@ protected:
     xbool            m_bPrepared;
     xbool            m_bStereoOverlay;
     const rtarget*  m_pStereoOverlayTarget;
+    f32              m_StereoClipTransform[4];
+    f32              m_HudElementScale;
+    xbool            m_bOutputSizeOverride;
     xbool            m_bStagesRegistered;
     xbool            m_isInitialized;
 };

@@ -112,6 +112,12 @@ shaders:
     {
     }
 
+    shader ui_multiview_vs vertex a51_ui.hlsl VSMainMultiview vs_6_1
+    {
+        common_args "-DA51_MULTIVIEW=1"
+        vulkan_args "-fspv-target-env=vulkan1.1"
+    }
+
     shader ui_ps pixel a51_ui.hlsl PSMain ps_6_0
     {
     }

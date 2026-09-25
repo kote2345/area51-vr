@@ -225,10 +225,17 @@ void hud_object::LayoutPlayerHud( player_hud& PlayerHud, const rect& ViewDimensi
             return;
     }
 
-    const f32 LeftInset   = UseLeftMargin   ? (f32)LEFTMARGIN   : 0.0f;
-    const f32 TopInset    = UseTopMargin    ? (f32)TOPMARGIN    : 0.0f;
-    const f32 RightInset  = UseRightMargin  ? (f32)RIGHTMARGIN  : 0.0f;
-    const f32 BottomInset = UseBottomMargin ? (f32)BOTTOMMARGIN : 0.0f;
+#if defined( A51_ENABLE_OPENXR )
+    /* Move edge-anchored meters and counters away from the Quest lens/FOV
+     * boundary. Their legacy desktop inset is too small at a headset scale. */
+    const f32 HudSafeInset = 72.0f;
+#else
+    const f32 HudSafeInset = (f32)LEFTMARGIN;
+#endif
+    const f32 LeftInset   = UseLeftMargin   ? HudSafeInset : 0.0f;
+    const f32 TopInset    = UseTopMargin    ? HudSafeInset : 0.0f;
+    const f32 RightInset  = UseRightMargin  ? HudSafeInset : 0.0f;
+    const f32 BottomInset = UseBottomMargin ? HudSafeInset : 0.0f;
 
     PlayerHud.m_XPos   = ViewDimensions.Min.X + LeftInset + 2.0f;
     PlayerHud.m_YPos   = ViewDimensions.Min.Y + TopInset  + 2.0f;
@@ -495,6 +502,18 @@ void hud_object::RenderLetterBox( const irect& VP, f32 Amount )
 xbool g_RenderHUD = TRUE;
 void hud_object::OnRender( void )
 {
+#if defined( A51_ENABLE_OPENXR )
+    static u32 XRHudTraceFrames = 0;
+    const xbool bTraceXRHud = XRHudTraceFrames < 3;
+    if( bTraceXRHud )
+    {
+        ++XRHudTraceFrames;
+        x_DebugMsg( "OpenXR HUD trace: OnRender state=%d logic=%d initialized=%d enabled=%d\n",
+                    (s32)g_StateMgr.GetState(), m_LogicRunning, m_Initialized,
+                    g_RenderHUD );
+    }
+#endif
+
     // If _Debug_ tirgger is set dont render any HUD.   
 #if !defined(X_RETAIL) || defined(X_QA)
     if( g_RenderHUD == FALSE )
@@ -523,6 +542,10 @@ void hud_object::OnRender( void )
         // Check and see if it worked, if not, come back later.
         if( !m_Initialized )
         {
+#if defined( A51_ENABLE_OPENXR )
+            if( bTraceXRHud )
+                x_DebugMsg( "OpenXR HUD trace: InitHud is still waiting for a local player\n" );
+#endif
             return;
         }
     }
@@ -541,7 +564,13 @@ void hud_object::OnRender( void )
 
     player* pActivePlayer = SMP_UTIL_GetActivePlayer();
     if( !pActivePlayer )
+    {
+#if defined( A51_ENABLE_OPENXR )
+        if( bTraceXRHud )
+            x_DebugMsg( "OpenXR HUD trace: no active player\n" );
+#endif
         return;
+    }
 
     rect ScreenViewDimensions;
     pActivePlayer->GetRenderView().GetViewport( ScreenViewDimensions );
@@ -586,6 +615,16 @@ void hud_object::OnRender( void )
     g_UIRenderer.PushScreenSpace( ScreenViewport );
     RenderFrameRateInfo();
     g_UIRenderer.PopScreenSpace();
+
+#if defined( A51_ENABLE_OPENXR )
+    if( bTraceXRHud )
+        x_DebugMsg( "OpenXR HUD trace: viewport=%d,%d-%d,%d output=%dx%d commands=%d\n",
+                    ScreenViewport.l, ScreenViewport.t,
+                    ScreenViewport.r, ScreenViewport.b,
+                    g_UIRenderer.GetViewport().GetOutputWidth(),
+                    g_UIRenderer.GetViewport().GetOutputHeight(),
+                    g_UIRenderer.GetDrawList().GetCommandCount() );
+#endif
 
 }
 //==============================================================================

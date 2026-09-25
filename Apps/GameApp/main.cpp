@@ -739,6 +739,23 @@ static void XRStage_BeginFrame( void );
 static void XRStage_BeforePresent( void );
 static void XRStage_AfterPresent( void );
 static void XRInput_Capture( input_event_buffer& Events );
+
+static xbool XRGetUIClipTransform( const a51::xr::eye_view& Eye,
+                                   f32& Scale, f32& Center )
+{
+    const f32 Left = -x_tan( Eye.FovLeft );
+    const f32 Right = -x_tan( Eye.FovRight );
+    const f32 Width = Left - Right;
+    if( x_abs( Width ) <= 0.0001f )
+        return FALSE;
+
+    const f32 HalfFOV = MAX( x_abs( Eye.FovLeft ),
+                             x_abs( Eye.FovRight ) );
+    Scale = (2.0f * x_tan( HalfFOV )) / Width;
+    Center = (Left + Right) / Width;
+    return x_isvalid( Scale ) && x_isvalid( Center );
+}
+
 static const eng_frame_stage s_XRFrameStage =
 {
     XRStage_BeginFrame,
@@ -845,6 +862,21 @@ static void XRStage_BeginFrame( void )
     if( !g_XRFrameShouldRender )
         return;
 
+    a51::xr::eye_view StereoEye[2];
+    f32 Scale0 = 1.0f;
+    f32 Center0 = 0.0f;
+    f32 Scale1 = 1.0f;
+    f32 Center1 = 0.0f;
+    if( g_XRSession.GetEyeView( 0, StereoEye[0] ) &&
+        g_XRSession.GetEyeView( 1, StereoEye[1] ) )
+    {
+        XRGetUIClipTransform( StereoEye[0], Scale0, Center0 );
+        XRGetUIClipTransform( StereoEye[1], Scale1, Center1 );
+    }
+    g_UIRenderer.SetStereoClipTransforms( Scale0, Center0,
+                                           Scale1, Center1 );
+    g_UIRenderer.SetHudElementScale( 0.50f );
+
     /* Every visible OpenXR frame renders into an acquired swapchain image.
      * Eye zero is the direct target for the flat menu/quad layer; gameplay
      * switches between the two acquired eye images in RenderGameStereoXR. */
@@ -950,9 +982,13 @@ static void XRStage_BeforePresent( void )
     const xbool bUseQuadLayer = !g_XRFrameMultiviewRendered;
     const char* pXRRenderPath = bUseQuadLayer ? "quad"
                               : "multiview-array";
-        const xbool bPrepared = bUseQuadLayer
-                          ? g_XRSession.PrepareQuadFrame( XRFrame )
-                          : g_XRSession.PrepareMultiviewFrame( XRFrame );
+    const f32 QuadWidthMeters = 1.6f;
+    const f32 QuadHeightMeters = QuadWidthMeters *
+        (f32)XRFrame.Height / (f32)XRFrame.Width;
+    const xbool bPrepared = bUseQuadLayer
+                      ? g_XRSession.PrepareQuadFrame( XRFrame,
+                            QuadWidthMeters, QuadHeightMeters, 1.8f )
+                      : g_XRSession.PrepareMultiviewFrame( XRFrame );
     if( !bPrepared )
     {
         x_DebugMsg( "OpenXR game frame preparation failed: %s\n",
@@ -1525,6 +1561,18 @@ void RenderGame( void )
             g_View = pPlayers[i]->GetRenderView();
 
 #if defined( A51_ENABLE_OPENXR )
+            if( g_XRActiveEye >= 0 )
+            {
+                const s32 XRViewportWidth =
+                    g_XRRenderWidth ? (s32)g_XRRenderWidth : XRes;
+                const s32 XRViewportHeight =
+                    g_XRRenderHeight ? (s32)g_XRRenderHeight : YRes;
+                /* HUD layout reads the player's live view, not the local
+                 * g_View copy used by the scene render. */
+                player::GetLiveView( i ).SetViewport(
+                    0, 0, XRViewportWidth, XRViewportHeight );
+            }
+
             /* PlayerView already contains the tracked HMD orientation for
              * gameplay and HUD. Compose only the per-eye offset here;
              * applying the full pose again would make rendered aim diverge. */
@@ -2510,7 +2558,17 @@ void RunGame( void )
                 if( g_nLogicFramesAfterLoad > 10 )
                 {
 #if defined( A51_ENABLE_OPENXR )
-                    RenderGameStereoXR();
+                    if( g_StateMgr.IsPaused() )
+                    {
+                        /* Render pause screens to the acquired XR image and
+                         * submit that image as a world-space quad. */
+                        g_UIRenderer.SetOutputSize( (s32)g_XRRenderWidth,
+                                                    (s32)g_XRRenderHeight );
+                    }
+                    else
+                    {
+                        RenderGameStereoXR();
+                    }
 #else
                     RenderGame();
 #endif

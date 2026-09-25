@@ -20,6 +20,11 @@ A51_CBUFFER_ATTR(0, 0) cbuffer cbUIDraw A51_CBUFFER_BIND(0, 0)
 {
     float2 LogicalOrigin;
     float2 InverseLogicalSize;
+    // Per-eye conversion to the asymmetric OpenXR projection.
+    // x/y are scale; z/w are the clip-space center for eyes 0/1.
+    float4 StereoClipTransform;
+    // HUD-only uniform scale, centered around the viewport center.
+    float4 HudSettings;
 };
 
 A51_SAMPLED_TEXTURE_ATTR(0, 0) Texture2D txUI A51_SAMPLED_TEXTURE_BIND(0, 0);
@@ -53,14 +58,32 @@ PS_INPUT VSMain( VS_INPUT input )
 {
     PS_INPUT output;
     const float2 normalized = (input.Position - LogicalOrigin) * InverseLogicalSize;
-    output.Position = float4( normalized.x * 2.0f - 1.0f,
-                              1.0f - normalized.y * 2.0f,
+    const float HudScale = HudSettings.x;
+    output.Position = float4( (normalized.x * 2.0f - 1.0f) * HudScale,
+                              (1.0f - normalized.y * 2.0f) * HudScale,
                               0.0f,
                               1.0f );
     output.Color = input.Color.bgra;
     output.UV = input.UV;
     return output;
 }
+
+// Map the common HUD layout through each eye's exact off-axis projection so
+// the center reticle stays on the head-forward ray in both eyes.
+#if defined(A51_MULTIVIEW)
+PS_INPUT VSMainMultiview( VS_INPUT input, uint viewIndex : SV_ViewID )
+{
+    PS_INPUT output = VSMain( input );
+    const float scale = ( viewIndex == 0 )
+                      ? StereoClipTransform.x
+                      : StereoClipTransform.y;
+    const float center = ( viewIndex == 0 )
+                       ? StereoClipTransform.z
+                       : StereoClipTransform.w;
+    output.Position.x = output.Position.x * scale + center * output.Position.w;
+    return output;
+}
+#endif
 
 //==============================================================================
 
