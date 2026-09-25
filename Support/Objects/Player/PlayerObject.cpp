@@ -547,7 +547,7 @@ void player::OnInit( void )
          * network skin packet. Campaign VR has no packet, so use its default
          * human multiplayer skin explicitly instead of drawing every variant. */
         if( IsVrAvatarMode() )
-            net_SetSkin( SKIN_HAZMAT_0 );
+            net_SetSkin( SKIN_SPECFOR_0 );
     }
 
     // Arms
