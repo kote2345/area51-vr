@@ -113,37 +113,46 @@ static void ApplyBoneDeltaToSubtree( const anim_group& Group,
 
 static xbool GetVRHandTarget( const player& Player,
                               u32 Hand,
-                              vector3& Target )
+                              vector3& Target,
+                              matrix4& TargetRotation )
 {
     a51::xr::controller_pose Pose{};
     if( !g_XRSession.GetControllerPose( Hand, Pose ) || !Pose.Valid )
         return FALSE;
 
-    /* The pose is head-relative. Convert OpenXR's right-handed local basis to
-     * the game camera basis, then use the same current head camera transform
-     * that drives the player's view. */
-    const vector3 TrackingOffset( -Pose.Position[0] * 100.0f,
-                                   Pose.Position[1] * 100.0f,
-                                  -Pose.Position[2] * 100.0f );
-    matrix4 TrackingToWorld = Player.GetL2W();
-    TrackingToWorld.SetTranslation( Player.GetRenderView().GetPosition() );
+    /* Map both the HMD and controller from the stable yaw-aligned tracking
+     * origin into the avatar's world frame. Subtracting the tracked HMD offset
+     * anchors the origin to the current in-game eye point without rotating the
+     * hands with head pitch or roll. */
     a51::xr::eye_view XREye{};
-    if( g_XRSession.GetEyeView( 0, XREye ) )
-    {
-        quaternion HeadRotation( -XREye.Orientation[0],
-                                   XREye.Orientation[1],
-                                  -XREye.Orientation[2],
-                                   XREye.Orientation[3] );
-        HeadRotation.Normalize();
-        matrix4 HeadLocal;
-        HeadLocal.Identity();
-        HeadLocal.SetRotation( HeadRotation );
-        TrackingToWorld = TrackingToWorld * HeadLocal;
-    }
-    const vector3 WorldTarget = TrackingToWorld * TrackingOffset;
-    /* loco_char_anim_player bone positions and render matrices are in world
-     * space, so keep the target there for the two-bone solve. */
-    Target = WorldTarget;
+    if( !g_XRSession.GetEyeView( 0, XREye ) )
+        return FALSE;
+
+    const vector3 HeadTrackingOffset( -XREye.TrackingPosition[0] * 100.0f,
+                                       XREye.TrackingPosition[1] * 100.0f,
+                                      -XREye.TrackingPosition[2] * 100.0f );
+    const vector3 HandTrackingOffset( -Pose.Position[0] * 100.0f,
+                                       Pose.Position[1] * 100.0f,
+                                      -Pose.Position[2] * 100.0f );
+    matrix4 PlayerToWorld = Player.GetL2W();
+    PlayerToWorld.ClearTranslation();
+    PlayerToWorld.ClearScale();
+    const vector3 TrackingOriginWorld = Player.GetRenderView().GetPosition() -
+        PlayerToWorld.RotateVector( HeadTrackingOffset );
+    Target = TrackingOriginWorld +
+             PlayerToWorld.RotateVector( HandTrackingOffset );
+
+    quaternion ControllerLocal( -Pose.Orientation[0],
+                                  Pose.Orientation[1],
+                                 -Pose.Orientation[2],
+                                  Pose.Orientation[3] );
+    ControllerLocal.Normalize();
+    matrix4 ControllerRotation;
+    ControllerRotation.Identity();
+    ControllerRotation.SetRotation( ControllerLocal );
+    TargetRotation = PlayerToWorld * ControllerRotation;
+    TargetRotation.ClearTranslation();
+    TargetRotation.ClearScale();
     return TRUE;
 }
 
@@ -231,7 +240,9 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
         }
 
         vector3 WristTarget;
-        if( !GetVRHandTarget( *this, Hand, WristTarget ) )
+        matrix4 HandTargetRotation;
+        if( !GetVRHandTarget( *this, Hand, WristTarget,
+                              HandTargetRotation ) )
         {
 #if defined(TARGET_ANDROID)
             if( TraceVRIK )
@@ -300,6 +311,22 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
         }
         ApplyBoneDeltaToSubtree( *pGroup, pSolved, nActiveBones,
                                  ForearmBones[Hand], ForearmDelta );
+
+        /* The two-bone solve positions the wrist, but the hand bone still
+         * retained its animation rotation. Match the controller orientation
+         * at the wrist and carry that rotation through the finger subtree. */
+        matrix4 CurrentHandRotation = pSolved[HandBones[Hand]];
+        CurrentHandRotation.ClearTranslation();
+        CurrentHandRotation.ClearScale();
+        if( CurrentHandRotation.InvertRT() )
+        {
+            matrix4 HandDelta = HandTargetRotation * CurrentHandRotation;
+            const vector3 HandPivot = pSolved[HandBones[Hand]].GetTranslation();
+            HandDelta.SetTranslation(
+                HandPivot - HandDelta.RotateVector( HandPivot ) );
+            ApplyBoneDeltaToSubtree( *pGroup, pSolved, nActiveBones,
+                                     HandBones[Hand], HandDelta );
+        }
         bApplied = TRUE;
     }
 

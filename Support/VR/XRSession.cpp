@@ -2008,6 +2008,26 @@ xbool VulkanSession::GetEyeView( u32 Eye, eye_view& View ) const
     View.Position[0] = (Eye == 0) ? 0.032f : -0.032f;
     View.Position[1] = 0.0f;
     View.Position[2] = 0.0f;
+    XrPosef TrackingHead = m_pImpl->Views[0].pose;
+    if( m_pImpl->Views.size() > 1 )
+    {
+        TrackingHead.position.x =
+            (m_pImpl->Views[0].pose.position.x +
+             m_pImpl->Views[1].pose.position.x) * 0.5f;
+        TrackingHead.position.y =
+            (m_pImpl->Views[0].pose.position.y +
+             m_pImpl->Views[1].pose.position.y) * 0.5f;
+        TrackingHead.position.z =
+            (m_pImpl->Views[0].pose.position.z +
+             m_pImpl->Views[1].pose.position.z) * 0.5f;
+    }
+    const XrPosef RelativeHead = m_pImpl->TrackingOriginValid
+                               ? RelativePose( m_pImpl->TrackingOrigin,
+                                               TrackingHead )
+                               : TrackingHead;
+    View.TrackingPosition[0] = RelativeHead.position.x;
+    View.TrackingPosition[1] = RelativeHead.position.y;
+    View.TrackingPosition[2] = RelativeHead.position.z;
     /* Keep the camera pose and compositor pose from the same XrView. This is
      * the important comparison with Simpsons: each eye uses its own view,
      * while both passes share the same composition and projection code. */
@@ -2075,24 +2095,13 @@ xbool VulkanSession::GetControllerPose( u32 Hand,
         return FALSE;
     }
 
-    /* Express the grip pose relative to the current head pose. The game
-     * camera is anchored at the avatar's head and uses the same current HMD
-     * orientation, so this avoids carrying the OpenXR session-start origin
-     * into player-space (which can be stale after leaving the front end). */
-    XrPosef HeadPose = m_pImpl->Views[0].pose;
-    if( m_pImpl->Views.size() > 1 )
-    {
-        HeadPose.position.x =
-            ( m_pImpl->Views[0].pose.position.x +
-              m_pImpl->Views[1].pose.position.x ) * 0.5f;
-        HeadPose.position.y =
-            ( m_pImpl->Views[0].pose.position.y +
-              m_pImpl->Views[1].pose.position.y ) * 0.5f;
-        HeadPose.position.z =
-            ( m_pImpl->Views[0].pose.position.z +
-              m_pImpl->Views[1].pose.position.z ) * 0.5f;
-    }
-    const XrPosef RelativeHand = RelativePose( HeadPose, Location.pose );
+    /* Keep controller poses in the stable tracking-origin frame. Converting
+     * through the current head pose made hand transforms inherit head turns
+     * and made wrist rotation impossible to apply independently. */
+    const XrPosef RelativeHand = m_pImpl->TrackingOriginValid
+                               ? RelativePose( m_pImpl->TrackingOrigin,
+                                               Location.pose )
+                               : Location.pose;
     Pose.Position[0] = RelativeHand.position.x;
     Pose.Position[1] = RelativeHand.position.y;
     Pose.Position[2] = RelativeHand.position.z;
