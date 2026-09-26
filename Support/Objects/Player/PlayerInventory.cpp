@@ -912,6 +912,43 @@ xbool player::OnPickup( pickup& Pickup )
     if( !CanTakePickup( Pickup ) )
         return( FALSE );
 
+    const inven_item PickupItem = Pickup.GetItem();
+    if( IsVrAvatarMode() &&
+        IN_RANGE( INVEN_WEAPON_FIRST, PickupItem, INVEN_WEAPON_LAST ) &&
+        ( PickupItem != INVEN_WEAPON_MUTATION ) )
+    {
+        s32 BestHand = -1;
+        /* Pickup object origins can sit near the center/base of the rendered
+         * weapon, away from the grip point. Keep the check hand-driven while
+         * allowing a natural hand-sized interaction radius. */
+        f32 BestDistanceSqr = x_sqr( 90.0f );
+        for( s32 Hand = 0; Hand < 2; ++Hand )
+        {
+            if( m_VrGripAmount[Hand] < 0.70f )
+                continue;
+
+            matrix4 HandTransform;
+            if( !GetVrHandTransform( Hand, HandTransform ) )
+                continue;
+
+            const f32 DistanceSqr =
+                ( HandTransform.GetTranslation() - Pickup.GetPosition() ).LengthSquared();
+            if( DistanceSqr < BestDistanceSqr )
+            {
+                BestDistanceSqr = DistanceSqr;
+                BestHand = Hand;
+            }
+        }
+
+        // World weapon pickups require an actual hand grip in VR. Body
+        // collision alone must leave the weapon in the world.
+        if( BestHand < 0 )
+            return( FALSE );
+
+        m_VrPendingPickupWeapon = PickupItem;
+        m_VrPendingPickupHand = BestHand;
+    }
+
 #ifndef X_EDITOR
     if( g_NetworkMgr.IsServer() )
 #endif

@@ -36,6 +36,9 @@
 #include "NetworkMgr/MsgMgr.hpp"
 #endif
 #include "GameLib/DebugCheats.hpp"
+#if defined(TARGET_ANDROID)
+#include <android/log.h>
+#endif
 
 //=========================================================================
 // DEBUG
@@ -1213,7 +1216,8 @@ void new_weapon::RenderWeapon( xbool bDebug, const xcolor& Ambient, xbool Cloake
         // if we are owned by a player, then we need to ask for his offset
         object*        pOwner    = g_ObjMgr.GetObjectByGuid( m_OwnerGuid );
         vector3        Offset    ( 0.0f, 0.0f, 0.0f );
-        if ( pOwner && pOwner->IsKindOf( player::GetRTTI() ) )
+        if ( pOwner && pOwner->IsKindOf( player::GetRTTI() ) &&
+             !((player*)pOwner)->IsVrAvatarMode() )
         {
             Offset = ((player*)pOwner)->GetCurrentWeaponCollisionOffset();
         }
@@ -1560,17 +1564,43 @@ void new_weapon::OnMove( const vector3& NewPos )
 void new_weapon::OnTransform( const matrix4& L2W )
 {
     object::OnTransform( L2W );
-    
+
     // for other weapons that need to do stuff
     MoveMuzzleFx();
 
-#ifdef DEBUG_NPC_WEAPON   
+#ifdef DEBUG_NPC_WEAPON
     WeaponPos = L2W.GetTranslation();
 #endif
 
     if ( m_AnimGroup[m_CurrentRenderState].GetPointer() )
     {
         m_AnimPlayer[m_CurrentRenderState].SetRotationAndPosition( L2W );
+    }
+}
+
+//==============================================================================
+
+xbool new_weapon::HasVrWorldModel( void )
+{
+    return ( m_Skin[RENDER_STATE_NPC].GetSkinGeom() != NULL ) &&
+           ( m_AnimGroup[RENDER_STATE_NPC].GetPointer() != NULL );
+}
+
+//==============================================================================
+
+void new_weapon::SetVrWorldTransform( const matrix4& L2W )
+{
+    /* The game keeps the player weapon rig active for firing and reload
+     * logic, while VR draws the third-person gun. Both animation players
+     * need the same world pose or the visible mesh stays at its last pose. */
+    OnTransform( L2W );
+    for( s32 State = 0; State < RENDER_STATE_MAX; ++State )
+    {
+        if( State != m_CurrentRenderState &&
+            m_AnimGroup[State].GetPointer() )
+        {
+            m_AnimPlayer[State].SetRotationAndPosition( L2W );
+        }
     }
 }
 
@@ -2553,6 +2583,21 @@ base_projectile* new_weapon::CreateBullet(
         // Lookup speed
         tweak_handle SpeedTweak( xfs("%s_SPEED",pWeaponLogicalName) );
         pBullet->Initialize( InitPos, InitRot, InheritedVelocity, SpeedTweak.GetF32(), OwnerGuid, PainHandle, bHitLiving, iFirePoint );
+#if defined(TARGET_ANDROID) && defined(A51_ENABLE_OPENXR)
+        if( pOwner->IsKindOf( player::GetRTTI() ) &&
+            player::GetSafeType( *pOwner ).IsVrAvatarMode() )
+        {
+            vector3 ActualDirection = pBullet->GetVelocity();
+            if( ActualDirection.LengthSquared() > 0.0001f )
+                ActualDirection.Normalize();
+            __android_log_print( ANDROID_LOG_INFO, "A51VR",
+                "vr bullet item=%d point=%d dir=%.3f,%.3f,%.3f pos=%.1f,%.1f,%.1f",
+                (s32)m_Item, iFirePoint,
+                ActualDirection.GetX(), ActualDirection.GetY(),
+                ActualDirection.GetZ(), InitPos.GetX(), InitPos.GetY(),
+                InitPos.GetZ() );
+        }
+#endif
 
         // Lookup pain degradation
         tweak_handle PainDropDistTweak ( xfs("%s_PainDropDist",pWeaponLogicalName) );
@@ -2606,6 +2651,104 @@ xbool new_weapon::GetFiringBonePosition ( vector3 &Pos, s32 iBone )
     }   
 
     return FALSE;
+}
+
+//==============================================================================
+
+xbool new_weapon::GetFiringBoneDirection( vector3& Direction, s32 iBone )
+{
+    if( iBone < 0 || iBone >= FIRE_POINT_COUNT ||
+        m_FiringPointBoneIndex[iBone] < 0 )
+    {
+        return FALSE;
+    }
+
+    const matrix4& FirePoint =
+        m_AnimPlayer[m_CurrentRenderState].GetBoneL2W(
+            m_FiringPointBoneIndex[iBone] );
+    Direction = FirePoint.RotateVector( vector3( 0.0f, 0.0f, 1.0f ) );
+    if( Direction.LengthSquared() <= 0.0001f )
+        return FALSE;
+    Direction.Normalize();
+    return TRUE;
+}
+
+//==============================================================================
+
+xbool new_weapon::GetVrWorldFiringRay( vector3& Position,
+                                       vector3& Direction,
+                                       s32 iBone )
+{
+    static const char* const FirePointNames[FIRE_POINT_COUNT] =
+    {
+        "firepoint", "firepoint_left", "firepoint_right"
+    };
+    static const char* const AimPointNames[FIRE_POINT_COUNT] =
+    {
+        "aimpoint", "aimpoint_left", "aimpoint_right"
+    };
+    if( iBone < 0 || iBone >= FIRE_POINT_COUNT ||
+        !m_AnimGroup[RENDER_STATE_NPC].GetPointer() )
+    {
+        return FALSE;
+    }
+
+    s32 Point = iBone;
+    s32 Bone = m_AnimPlayer[RENDER_STATE_NPC].GetBoneIndex(
+        FirePointNames[iBone] );
+    if( Bone < 0 && iBone != FIRE_POINT_DEFAULT )
+    {
+        Point = FIRE_POINT_DEFAULT;
+        Bone = m_AnimPlayer[RENDER_STATE_NPC].GetBoneIndex(
+            FirePointNames[FIRE_POINT_DEFAULT] );
+    }
+    if( Bone < 0 )
+        return FALSE;
+
+    /* Bone positions are already in world space. The model's aimpoint is
+     * behind its firepoint, so this vector follows the visible barrel. */
+    Position = m_AnimPlayer[RENDER_STATE_NPC].GetBonePosition( Bone );
+    s32 AimBone = m_AnimPlayer[RENDER_STATE_NPC].GetBoneIndex(
+        AimPointNames[Point] );
+    if( AimBone < 0 && Point != FIRE_POINT_DEFAULT )
+        AimBone = m_AnimPlayer[RENDER_STATE_NPC].GetBoneIndex(
+            AimPointNames[FIRE_POINT_DEFAULT] );
+    if( AimBone >= 0 )
+        Direction = Position -
+            m_AnimPlayer[RENDER_STATE_NPC].GetBonePosition( AimBone );
+    else
+        Direction.Zero();
+
+    if( Direction.LengthSquared() <= 0.0001f )
+    {
+        /* Older weapon rigs have no aimpoint. GetBoneL2W is already a world
+         * matrix; applying the weapon transform to its result again rotated
+         * the shot a second time. */
+        Direction = m_AnimPlayer[RENDER_STATE_NPC].GetBoneL2W( Bone )
+            .RotateVector( vector3( 0.0f, 0.0f, -1.0f ) );
+    }
+    if( Direction.LengthSquared() <= 0.0001f )
+        return FALSE;
+    Direction.Normalize();
+    return TRUE;
+}
+
+//==============================================================================
+
+xbool new_weapon::GetVrWorldFiringBoneDirection( vector3& Direction,
+                                                  s32 iBone )
+{
+    vector3 Position;
+    return GetVrWorldFiringRay( Position, Direction, iBone );
+}
+
+//==============================================================================
+
+xbool new_weapon::GetVrWorldFiringBonePosition( vector3& Position,
+                                                s32 iBone )
+{
+    vector3 Direction;
+    return GetVrWorldFiringRay( Position, Direction, iBone );
 }
 
 //==============================================================================

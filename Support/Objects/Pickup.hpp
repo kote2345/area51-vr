@@ -92,6 +92,7 @@ static  const   object_desc&    GetObjectType       ( void );
 
                 inven_item      GetItem             ( void ) const { return m_Item; }
                 f32             GetAmount           ( void ) const { return m_Amount; }
+                void            CompleteVrPickup    ( actor& Actor );
 
 #ifndef X_EDITOR
 virtual         void            net_AcceptUpdate    ( const bitstream& BS );

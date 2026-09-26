@@ -238,9 +238,12 @@ vector3 player::GetDefaultViewPos( void )
     if( IsVrAvatarMode() && m_Loco.IsAnimLoaded() )
     {
         /* This NPC's authored aim point sits low in its head. Raise the VR
-         * eye point slightly while retaining the animated crouch/body height. */
+         * eye point slightly while retaining the animated crouch/body height.
+         * The OpenXR camera itself is 3DoF, so explicitly apply the player's
+         * gameplay crouch height to keep the view aligned with its capsule. */
         vector3 EyePosition = m_Loco.GetEyePosition();
-        EyePosition.GetY() += 15.0f;
+        EyePosition.GetY() += 15.0f -
+                              ( m_fCurrentCrouchFactor * 70.0f );
         return EyePosition;
     }
 #endif

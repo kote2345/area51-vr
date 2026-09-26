@@ -256,7 +256,40 @@ player::player( void ) :
     m_MutationChangeTime                ( 0.0f ),
     m_UseTime                           ( 0.0f )
 {
+    m_VrShownShotWeapon = INVEN_NULL;
+    m_VrShownShotPosition.Zero();
+    m_VrShownShotRotation.Zero();
+    m_VrShownShotValid = FALSE;
+    m_VrPendingPickupWeapon = INVEN_NULL;
+    m_VrPendingPickupHand = -1;
+    m_VrPreviousRightA = FALSE;
+    m_VrPreviousRightB = FALSE;
+
     s32 i;
+
+    for( i = 0; i < INVEN_NUM_WEAPONS; ++i )
+    {
+        m_VrWeaponRuntime[i].State = VR_WEAPON_HOLSTERED;
+        m_VrWeaponRuntime[i].Hand = -1;
+        m_VrWeaponRuntime[i].ReturnTimer = 0.0f;
+        m_VrWeaponRuntime[i].Velocity.Zero();
+        m_VrWeaponRuntime[i].ReturnStart.Zero();
+        m_VrWeaponRuntime[i].ReturnRotation.Identity();
+        m_VrWeaponRuntime[i].Transform.Identity();
+        m_VrWeaponRuntime[i].HandGripOffset.Identity();
+        m_VrWeaponRuntime[i].Initialized = FALSE;
+        m_VrWeaponRuntime[i].HandGripOffsetInitialized = FALSE;
+    }
+    for( i = 0; i < 2; ++i )
+    {
+        m_VrHeldWeapon[i] = INVEN_NULL;
+        m_VrGripAmount[i] = 0.0f;
+        m_VrTriggerAmount[i] = 0.0f;
+        m_VrPreviousGrip[i] = 0.0f;
+        m_VrControllerVelocity[i].Zero();
+        m_VrPreviousControllerPosition[i].Zero();
+        m_VrControllerPositionValid[i] = FALSE;
+    }
 
     SetIsActive( TRUE );
 

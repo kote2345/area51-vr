@@ -1466,7 +1466,8 @@ xbool VulkanSession::PollEvents( void )
     }
 }
 
-void VulkanSession::CaptureInput( ::input_event_buffer& Events )
+void VulkanSession::CaptureInput( ::input_event_buffer& Events,
+                                  xbool InGameplay )
 {
     if( !m_pImpl || !m_pImpl->InputActionsReady ||
         !m_pImpl->SessionRunning )
@@ -1614,10 +1615,21 @@ void VulkanSession::CaptureInput( ::input_event_buffer& Events )
                    INPUT_XBOX_BTN_X );
     AppendBoolean( m_pImpl->LeftYAction, m_pImpl->PreviousLeftY,
                    INPUT_XBOX_BTN_Y );
-    AppendBoolean( m_pImpl->RightAAction, m_pImpl->PreviousRightA,
-                   INPUT_XBOX_BTN_A );
-    AppendBoolean( m_pImpl->RightBAction, m_pImpl->PreviousRightB,
-                   INPUT_XBOX_BTN_B );
+    /* Keep menu buttons on the original mappings. Gameplay reads these two
+     * OpenXR actions directly so their press edges cannot be lost by the
+     * legacy gamepad hold-state snapshot. */
+    if( InGameplay )
+    {
+        m_pImpl->PreviousRightA = FALSE;
+        m_pImpl->PreviousRightB = FALSE;
+    }
+    else
+    {
+        AppendBoolean( m_pImpl->RightAAction, m_pImpl->PreviousRightA,
+                       INPUT_XBOX_BTN_A );
+        AppendBoolean( m_pImpl->RightBAction, m_pImpl->PreviousRightB,
+                       INPUT_XBOX_BTN_B );
+    }
     AppendBoolean( m_pImpl->LeftStickClickAction,
                    m_pImpl->PreviousLeftStickClick,
                    INPUT_XBOX_BTN_L_STICK );
@@ -2164,6 +2176,34 @@ xbool VulkanSession::GetControllerFingerInput( u32 Hand, f32& Grip,
     const xbool GripValid = ReadValue( GripAction, Grip );
     const xbool TriggerValid = ReadValue( TriggerAction, Trigger );
     return GripValid || TriggerValid;
+}
+
+xbool VulkanSession::GetRightControllerFaceButtons( xbool& A,
+                                                     xbool& B ) const
+{
+    A = FALSE;
+    B = FALSE;
+    if( !m_pImpl || !m_pImpl->InputActionsReady ||
+        !m_pImpl->SessionRunning )
+        return FALSE;
+
+    auto ReadButton = [&]( XrAction Action, xbool& Value ) -> xbool
+    {
+        if( !Action )
+            return FALSE;
+        XrActionStateGetInfo GetInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+        GetInfo.action = Action;
+        XrActionStateBoolean State{ XR_TYPE_ACTION_STATE_BOOLEAN };
+        if( XR_FAILED( xrGetActionStateBoolean( m_pImpl->Session,
+                                                &GetInfo, &State ) ) )
+            return FALSE;
+        Value = ( State.isActive && State.currentState ) ? TRUE : FALSE;
+        return TRUE;
+    };
+
+    const xbool AValid = ReadButton( m_pImpl->RightAAction, A );
+    const xbool BValid = ReadButton( m_pImpl->RightBAction, B );
+    return AValid || BValid;
 }
 
 xbool VulkanSession::PrepareStereoFrame( const vulkan_frame_info& LeftFrame,

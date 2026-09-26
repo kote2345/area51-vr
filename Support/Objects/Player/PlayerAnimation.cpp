@@ -16,6 +16,9 @@
 #include "Objects/JumpingBeanProjectile.hpp"
 #include "Objects/WeaponMutation.hpp"
 #include "GameLib/DebugCheats.hpp"
+#if defined(TARGET_ANDROID)
+#include <android/log.h>
+#endif
 
 //=========================================================================
 //  IMPLEMENTATION
@@ -625,7 +628,56 @@ void player::OnEvent( const event& Event )
                     const f32 MaxPenalty = (ReticleParams.m_MaxRadius- ReticleParams.m_MaxMovementPenalty) - ReticleParams.m_MinRadius;
                     m_ReticleShotPenalty = MIN( MaxPenalty, m_ReticleShotPenalty );
                     pWeapon->SetTarget( GetEnemyOnReticle() );
-                    pWeapon->FireWeapon( GetEyesPosition() , m_ForwardVelocity + m_StrafeVelocity, m_WpnHoldTime, GetProjectileTrajectory() , GetGuid(), iFirePoint );
+                    vector3 FirePosition = GetEyesPosition();
+                    vector3 FireVelocity = m_ForwardVelocity + m_StrafeVelocity;
+                    radian3 FireTrajectory;
+#if defined( A51_ENABLE_OPENXR )
+                    if( IsVrAvatarMode() )
+                    {
+                        /* Fire from the ray shown on the previous rendered
+                         * frame. Never fall back to the camera trajectory for
+                         * a VR weapon when the tracked pose is unavailable. */
+                        const xbool UsedShownRay =
+                            m_VrShownShotValid &&
+                            m_VrShownShotWeapon == m_CurrentWeaponItem;
+                        if( UsedShownRay )
+                        {
+                            FirePosition = m_VrShownShotPosition;
+                            FireTrajectory = m_VrShownShotRotation;
+                        }
+                        else if( GetVrHeldWeaponShot( pWeapon, iFirePoint,
+                                                       FirePosition,
+                                                       FireTrajectory ) )
+                        {
+                            m_VrShownShotWeapon = m_CurrentWeaponItem;
+                            m_VrShownShotPosition = FirePosition;
+                            m_VrShownShotRotation = FireTrajectory;
+                            m_VrShownShotValid = TRUE;
+                        }
+                        else
+                        {
+                            break;
+                        }
+                        FireVelocity.Zero();
+#if defined(TARGET_ANDROID)
+                        vector3 LaunchDirection( 0.0f, 0.0f, 1.0f );
+                        LaunchDirection.Rotate( FireTrajectory );
+                        __android_log_print( ANDROID_LOG_INFO, "A51VR",
+                            "vr shot item=%d eventPoint=%d cached=%d dir=%.3f,%.3f,%.3f",
+                            (s32)m_CurrentWeaponItem, iFirePoint,
+                            (s32)UsedShownRay,
+                            LaunchDirection.GetX(), LaunchDirection.GetY(),
+                            LaunchDirection.GetZ() );
+#endif
+                    }
+                    else
+#endif
+                    {
+                        FireTrajectory = GetProjectileTrajectory();
+                    }
+                    pWeapon->FireWeapon( FirePosition, FireVelocity,
+                                         m_WpnHoldTime, FireTrajectory,
+                                         GetGuid(), iFirePoint );
                 }
 
                 //ShakeView( s_FireShakeTime, s_FireShakeAmount, s_FireShakeSpeed );
@@ -659,7 +711,34 @@ void player::OnEvent( const event& Event )
                     const f32 MaxPenalty = (ReticleParams.m_MaxRadius- ReticleParams.m_MaxMovementPenalty) - ReticleParams.m_MinRadius;
                     m_ReticleShotPenalty = MIN( MaxPenalty, m_ReticleShotPenalty );
                     pWeapon->SetTarget( GetEnemyOnReticle() );
-                    pWeapon->FireSecondary( GetEyesPosition() , m_ForwardVelocity + m_StrafeVelocity, m_WpnHoldTime, GetProjectileTrajectory() , GetGuid(), iFirePoint );
+                    vector3 FirePosition = GetEyesPosition();
+                    vector3 FireVelocity = m_ForwardVelocity + m_StrafeVelocity;
+                    radian3 FireTrajectory;
+#if defined( A51_ENABLE_OPENXR )
+                    if( IsVrAvatarMode() )
+                    {
+                        if( m_VrShownShotValid &&
+                            m_VrShownShotWeapon == m_CurrentWeaponItem )
+                        {
+                            FirePosition = m_VrShownShotPosition;
+                            FireTrajectory = m_VrShownShotRotation;
+                        }
+                        else if( !GetVrHeldWeaponShot( pWeapon, iFirePoint,
+                                                        FirePosition,
+                                                        FireTrajectory ) )
+                        {
+                            break;
+                        }
+                        FireVelocity.Zero();
+                    }
+                    else
+#endif
+                    {
+                        FireTrajectory = GetProjectileTrajectory();
+                    }
+                    pWeapon->FireSecondary( FirePosition, FireVelocity,
+                                             m_WpnHoldTime, FireTrajectory,
+                                             GetGuid(), iFirePoint );
                 }
 
                 //ShakeView( s_AltFireShakeTime, s_AltFireShakeAmount, s_AltFireShakeSpeed );

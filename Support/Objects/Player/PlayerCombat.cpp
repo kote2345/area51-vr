@@ -25,6 +25,10 @@ static const f32 s_MeleeFeedbackAmount[MAX_COMBO_HITS]  = { 1.0f, 1.0f, 1.0f };
 
 xbool player::IsAltFiring( void )
 {
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() )
+        return FALSE;
+#endif
     return m_Combat.BuildInput( m_Input.GetState(), m_bIsMutated ).SecondaryHeld;
 }
 
@@ -32,6 +36,10 @@ xbool player::IsAltFiring( void )
 
 xbool player::IsAltFirePressed( void )
 {
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() )
+        return FALSE;
+#endif
     return m_Combat.BuildInput( m_Input.GetState(), m_bIsMutated ).SecondaryPressed;
 }
 
@@ -51,6 +59,21 @@ xbool player::IsAimToggleEnabled( void )
 
 xbool player::IsFiring( void )
 {
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() )
+    {
+        for( s32 Hand = 0; Hand < 2; ++Hand )
+        {
+            if( ( m_VrHeldWeapon[Hand] == m_CurrentWeaponItem ) &&
+                ( m_VrTriggerAmount[Hand] >= 0.55f ) &&
+                !m_bRespawnButtonPressed )
+            {
+                return TRUE;
+            }
+        }
+        return FALSE;
+    }
+#endif
     xbool PrimaryDown = m_Combat.BuildInput( m_Input.GetState(), m_bIsMutated ).PrimaryHeld;
     return( PrimaryDown && !m_bRespawnButtonPressed );
 }
@@ -130,6 +153,15 @@ void player::SetMeleeState( animation_state MeleeState )
 
 xbool player::AllowedToFire( void )
 {
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() &&
+        ( m_VrHeldWeapon[0] == INVEN_NULL ) &&
+        ( m_VrHeldWeapon[1] == INVEN_NULL ) )
+    {
+        return FALSE;
+    }
+#endif
+
     if( m_bHidePlayerArms )
     {
         return FALSE;

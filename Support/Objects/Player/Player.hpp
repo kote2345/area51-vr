@@ -351,6 +351,9 @@ public:
     const   view_info&      GetViewInfo         ( void ) { return m_ViewInfo; }
             xbool           IsAvatar            ( void );
             xbool           IsVrAvatarMode      ( void ) const;
+            xbool           GetVrHandTransform  ( u32 Hand,
+                                                   matrix4& Transform ) const;
+            void            UpdateVrWeapons     ( f32 DeltaTime );
             const matrix4*  ApplyVrArmIK        ( const matrix4* pMatrices,
                                                  s32 nActiveBones );
             const matrix4*  ApplyVrHeadVisibility( const matrix4* pMatrices,
@@ -672,6 +675,10 @@ protected:
             void        ResetWeaponAnimTable2       ( inven_item WeaponItem );
 
     virtual radian3     GetProjectileTrajectory     ( void );
+            xbool       GetVrHeldWeaponShot         ( new_weapon* pWeapon,
+                                                      s32 iFirePoint,
+                                                      vector3& Position,
+                                                      radian3& Rotation );
     virtual radian3     ApplyAimDegredation         ( radian Pitch, radian Yaw );
 
     virtual void        UpdateRotation              ( const f32& rDeltaTime );
@@ -1298,7 +1305,28 @@ protected:
 
 
 protected:
-    
+    enum vr_weapon_state
+    {
+        VR_WEAPON_HOLSTERED,
+        VR_WEAPON_HELD,
+        VR_WEAPON_DROPPED,
+        VR_WEAPON_RETURNING
+    };
+
+    struct vr_weapon_runtime
+    {
+        vr_weapon_state State;
+        s32             Hand;
+        f32             ReturnTimer;
+        vector3         Velocity;
+        vector3         ReturnStart;
+        quaternion      ReturnRotation;
+        matrix4         Transform;
+        matrix4         HandGripOffset;
+        xbool           Initialized;
+        xbool           HandGripOffsetInitialized;
+    };
+
     xbool                   m_bActivePlayer;
     xbool                   m_bSpeaking;
 
@@ -1321,6 +1349,23 @@ protected:
     xbool                   m_bHidePlayerArms;
     xbool                   m_bArmsWereHidden; // used so we can tell if we need to play the switch to anim
     xbool                   m_bPlaySwitchTo;   // if this is true, this will play the "switchto" animation after arms re-appear from m_bHidePlyerArms
+
+    vr_weapon_runtime       m_VrWeaponRuntime[INVEN_NUM_WEAPONS];
+    inven_item              m_VrHeldWeapon[2];
+    inven_item              m_VrShownShotWeapon;
+    vector3                 m_VrShownShotPosition;
+    radian3                 m_VrShownShotRotation;
+    xbool                   m_VrShownShotValid;
+    inven_item              m_VrPendingPickupWeapon;
+    s32                     m_VrPendingPickupHand;
+    f32                     m_VrGripAmount[2];
+    f32                     m_VrTriggerAmount[2];
+    f32                     m_VrPreviousGrip[2];
+    xbool                   m_VrPreviousRightA;
+    xbool                   m_VrPreviousRightB;
+    vector3                 m_VrControllerVelocity[2];
+    vector3                 m_VrPreviousControllerPosition[2];
+    xbool                   m_VrControllerPositionValid[2];
     
     // Can we do a tap fire?  Resets when the player releases the button (or maybe in the future after a timer?).
     xbool                   m_bCanTapFire;

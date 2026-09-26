@@ -7,6 +7,7 @@
 #include "PlayerMovement.hpp"
 #include "Player.hpp"
 #include "Objects/Ladders/Ladder_Field.hpp"
+#include "Objects/Pickup.hpp"
 #include "Objects/Turret.hpp"
 #include "NetworkMgr/GameMgr.hpp"
 #include "PerceptionMgr/PerceptionMgr.hpp"
@@ -528,7 +529,8 @@ void player::UpdateCrouchHeight( const f32& rDeltaTime )
     {
         //trying to crouch
         f32 NewCrouchFactor = MIN( 1.f ,  m_fCurrentCrouchFactor + m_fCrouchChangeRate * rDeltaTime );
-        if ( m_Physics.SetCrouchParametric( NewCrouchFactor ) )
+        if ( m_Physics.SetCrouchParametric(
+                 NewCrouchFactor, IsVrAvatarMode() ) )
         {
             m_fCurrentCrouchFactor = NewCrouchFactor;
         }
@@ -1159,6 +1161,8 @@ void player::UpdateGhostLoco( f32 DeltaTime )
             f32 Grip = 0.0f;
             f32 Trigger = 0.0f;
             g_XRSession.GetControllerFingerInput( Hand, Grip, Trigger );
+            m_VrGripAmount[Hand] = Grip;
+            m_VrTriggerAmount[Hand] = Trigger;
             m_Loco.m_Player.SetVrFingerInput( Hand, Grip, Trigger );
         }
         a51::xr::eye_view XREye{};
@@ -1183,4 +1187,396 @@ void player::UpdateGhostLoco( f32 DeltaTime )
     m_pLoco->SetYaw( BodyYaw );
     m_Loco.m_Player.SetVrBodyYaw( BodyYaw );
     OnAdvanceGhostLogic( DeltaTime );
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() )
+        UpdateVrWeapons( DeltaTime );
+#endif
+}
+
+//==========================================================================
+
+void player::UpdateVrWeapons( f32 DeltaTime )
+{
+#if defined( A51_ENABLE_OPENXR )
+    if( !IsVrAvatarMode() || !m_Loco.IsAnimLoaded() || IsDead() )
+        return;
+
+    matrix4 HandTransforms[2];
+    xbool HandValid[2] = { FALSE, FALSE };
+    for( s32 Hand = 0; Hand < 2; ++Hand )
+    {
+        HandValid[Hand] = GetVrHandTransform( Hand, HandTransforms[Hand] );
+        if( !HandValid[Hand] )
+        {
+            m_VrControllerPositionValid[Hand] = FALSE;
+            m_VrControllerVelocity[Hand].Zero();
+            continue;
+        }
+
+        const vector3 Position = HandTransforms[Hand].GetTranslation();
+        if( m_VrControllerPositionValid[Hand] && ( DeltaTime > 0.0001f ) )
+        {
+            m_VrControllerVelocity[Hand] =
+                ( Position - m_VrPreviousControllerPosition[Hand] ) / DeltaTime;
+            const f32 Speed = m_VrControllerVelocity[Hand].Length();
+            if( Speed > 1200.0f )
+                m_VrControllerVelocity[Hand] *= 1200.0f / Speed;
+        }
+        else
+        {
+            m_VrControllerVelocity[Hand].Zero();
+        }
+        m_VrPreviousControllerPosition[Hand] = Position;
+        m_VrControllerPositionValid[Hand] = TRUE;
+    }
+
+    const s32 RootBone = m_Loco.m_Player.GetBoneIndex( "B_01_Root" );
+    if( RootBone < 0 )
+        return;
+
+    const f32 AvatarCrouchOffset = m_fCurrentCrouchFactor * 70.0f;
+    matrix4 Body = m_Loco.m_Player.GetBoneL2W( RootBone );
+    Body.ClearTranslation();
+    Body.ClearScale();
+
+    const vector3 HolsterOffsets[6] =
+    {
+        vector3( -24.0f, 82.0f, -12.0f ),
+        vector3(  24.0f, 82.0f, -12.0f ),
+        vector3(  26.0f, 135.0f, -42.0f ),
+        vector3(  26.0f, 90.0f,   8.0f ),
+        vector3( -16.0f, 70.0f, -20.0f ),
+        vector3(  16.0f, 70.0f, -20.0f )
+    };
+    const radian HolsterYaw[2] = { R_90, -R_90 };
+
+    /* Releasing a weapon near its belt socket is the deliberate holster
+     * gesture. Otherwise it gets a short physical drop before returning. */
+    for( s32 Hand = 0; Hand < 2; ++Hand )
+    {
+        if( m_VrHeldWeapon[Hand] == INVEN_NULL ||
+            ( m_VrGripAmount[Hand] > 0.45f ) )
+            continue;
+
+        const inven_item Item = m_VrHeldWeapon[Hand];
+        const s32 Index = inventory2::ItemToWeaponIndex( Item );
+        new_weapon* pHeldWeapon = GetWeaponPtr( Item );
+        if( pHeldWeapon )
+        {
+            pHeldWeapon->EndPrimaryFire();
+            pHeldWeapon->EndAltFire();
+            pHeldWeapon->SetRenderState( new_weapon::RENDER_STATE_NPC );
+        }
+        if( Index >= 0 && Index < INVEN_NUM_WEAPONS )
+        {
+            vr_weapon_runtime& Runtime = m_VrWeaponRuntime[Index];
+            matrix4 Socket = Body;
+            matrix4 LocalYaw;
+            LocalYaw.Setup( vector3( 0.0f, 1.0f, 0.0f ),
+                            HolsterYaw[Index & 1] );
+            Socket = Body * LocalYaw;
+            // Holster offsets are measured from the player's floor origin.
+            // The animated root is already at hip height; using it here
+            // adds the belt height a second time.
+            vector3 SocketBase = GetPosition();
+            SocketBase.GetY() -= AvatarCrouchOffset;
+            const vector3 SocketPos =
+                SocketBase +
+                Body.RotateVector( HolsterOffsets[Index % 6] );
+            Socket.SetTranslation( SocketPos );
+
+            if( ( Runtime.Transform.GetTranslation() - SocketPos ).LengthSquared()
+                <= x_sqr( 34.0f ) )
+            {
+                Runtime.State = VR_WEAPON_HOLSTERED;
+                Runtime.Transform = Socket;
+                Runtime.Velocity.Zero();
+            }
+            else
+            {
+                Runtime.State = VR_WEAPON_DROPPED;
+                Runtime.ReturnTimer = 2.0f;
+                Runtime.Velocity = m_VrControllerVelocity[Hand] * 0.8f +
+                                   GetVelocity() * 0.25f;
+            }
+            Runtime.Hand = -1;
+        }
+        m_VrHeldWeapon[Hand] = INVEN_NULL;
+    }
+
+    /* A world pickup passes its item and grabbing hand through OnPickup.
+     * Initialize that weapon directly in the controller pose so the legacy
+     * auto-switch/pickup animation cannot pull it into the flat-view hand. */
+    if( m_VrPendingPickupWeapon != INVEN_NULL &&
+        m_VrPendingPickupHand >= 0 && m_VrPendingPickupHand < 2 )
+    {
+        inven_item Item = m_VrPendingPickupWeapon;
+        if( ( Item == INVEN_WEAPON_SMP ) &&
+            m_Inventory2.HasItem( INVEN_WEAPON_DUAL_SMP ) )
+            Item = INVEN_WEAPON_DUAL_SMP;
+        else if( ( Item == INVEN_WEAPON_SHOTGUN ) &&
+                 m_Inventory2.HasItem( INVEN_WEAPON_DUAL_SHT ) )
+            Item = INVEN_WEAPON_DUAL_SHT;
+
+        const s32 Index = inventory2::ItemToWeaponIndex( Item );
+        if( Index >= 0 && Index < INVEN_NUM_WEAPONS &&
+            m_Inventory2.HasItem( Item ) && GetWeaponPtr( Item ) )
+        {
+            vr_weapon_runtime& Runtime = m_VrWeaponRuntime[Index];
+            Runtime.State = VR_WEAPON_HELD;
+            Runtime.Hand = m_VrPendingPickupHand;
+            Runtime.HandGripOffsetInitialized = FALSE;
+            Runtime.Velocity.Zero();
+            Runtime.ReturnTimer = 0.0f;
+            Runtime.Initialized = TRUE;
+            m_VrHeldWeapon[m_VrPendingPickupHand] = Item;
+
+            /* A world pickup is not equipped by TakePickup in VR: automatic
+             * weapon switching is deliberately disabled there. Make the
+             * physically grabbed weapon the active weapon immediately so
+             * firing, the barrel direction and the debug ray all resolve
+             * through the same held weapon on its very first pickup. */
+            m_PrevWeaponItem = m_CurrentWeaponItem;
+            m_CurrentWeaponItem = Item;
+            m_NextWeaponItem = INVEN_NULL;
+
+            new_weapon* pPickedWeapon = GetWeaponPtr( Item );
+            if( pPickedWeapon )
+            {
+                pPickedWeapon->SetupRenderInformation();
+                pPickedWeapon->SetVisible( TRUE );
+                pPickedWeapon->SetRenderState(
+                    new_weapon::RENDER_STATE_PLAYER );
+                pPickedWeapon->ClearZoom();
+            }
+            SetAnimState( ANIM_STATE_IDLE );
+        }
+
+        m_VrPendingPickupWeapon = INVEN_NULL;
+        m_VrPendingPickupHand = -1;
+    }
+
+    /* Grab the nearest owned weapon when a grip crosses its press threshold.
+     * Only one gun is active in the legacy firing model at a time. */
+    for( s32 Hand = 0; Hand < 2; ++Hand )
+    {
+        const xbool bGripPressed = ( m_VrGripAmount[Hand] >= 0.70f ) &&
+                                   ( m_VrPreviousGrip[Hand] < 0.70f );
+        if( !bGripPressed || !HandValid[Hand] ||
+            ( m_VrHeldWeapon[0] != INVEN_NULL ) ||
+            ( m_VrHeldWeapon[1] != INVEN_NULL ) )
+            continue;
+
+        /* Pickups normally activate from the player's body collision. In VR
+         * that can happen before the player squeezes, so explicitly look for
+         * a nearby weapon when grip is pressed. This also lets the hand reach
+         * the actual model instead of requiring the pickup origin to be
+         * almost exactly inside the palm. */
+        pickup* pBestPickup = NULL;
+        f32 BestPickupDistanceSqr = x_sqr( 90.0f );
+        const vector3 HandPos = HandTransforms[Hand].GetTranslation();
+        for( slot_id Slot = g_ObjMgr.GetFirst( object::TYPE_PICKUP );
+             Slot != SLOT_NULL; Slot = g_ObjMgr.GetNext( Slot ) )
+        {
+            object* pObject = g_ObjMgr.GetObjectBySlot( Slot );
+            if( !pObject || !pObject->IsKindOf( pickup::GetRTTI() ) )
+                continue;
+
+            pickup& Candidate = pickup::GetSafeType( *pObject );
+            const inven_item Item = Candidate.GetItem();
+            if( !Candidate.GetTakeable() ||
+                !IN_RANGE( INVEN_WEAPON_FIRST, Item, INVEN_WEAPON_LAST ) ||
+                Item == INVEN_WEAPON_MUTATION )
+                continue;
+
+            const f32 DistanceSqr =
+                ( Candidate.GetPosition() - HandPos ).LengthSquared();
+            if( DistanceSqr < BestPickupDistanceSqr )
+            {
+                BestPickupDistanceSqr = DistanceSqr;
+                pBestPickup = &Candidate;
+            }
+        }
+
+        if( pBestPickup && OnPickup( *pBestPickup ) )
+        {
+            pBestPickup->CompleteVrPickup( *this );
+            continue;
+        }
+
+        inven_item BestItem = INVEN_NULL;
+        f32 BestDistanceSqr = x_sqr( 48.0f );
+        for( s32 WeaponIndex = 0; WeaponIndex < INVEN_NUM_WEAPONS; ++WeaponIndex )
+        {
+            const inven_item Item = inventory2::WeaponIndexToItem( WeaponIndex );
+            if( Item == INVEN_NULL || Item == INVEN_WEAPON_MUTATION ||
+                !m_Inventory2.HasItem( Item ) || !GetWeaponPtr( Item ) )
+                continue;
+
+            vr_weapon_runtime& Runtime = m_VrWeaponRuntime[WeaponIndex];
+            if( ( Runtime.State != VR_WEAPON_HOLSTERED ) &&
+                ( Runtime.State != VR_WEAPON_DROPPED ) )
+                continue;
+
+            const f32 DistanceSqr =
+                ( Runtime.Transform.GetTranslation() - HandPos ).LengthSquared();
+            if( DistanceSqr < BestDistanceSqr )
+            {
+                BestDistanceSqr = DistanceSqr;
+                BestItem = Item;
+            }
+        }
+
+        if( BestItem != INVEN_NULL )
+        {
+            const s32 Index = inventory2::ItemToWeaponIndex( BestItem );
+            vr_weapon_runtime& Runtime = m_VrWeaponRuntime[Index];
+            Runtime.State = VR_WEAPON_HELD;
+            Runtime.Hand = Hand;
+            Runtime.HandGripOffsetInitialized = FALSE;
+            Runtime.Velocity.Zero();
+            Runtime.ReturnTimer = 0.0f;
+            m_VrHeldWeapon[Hand] = BestItem;
+            GetWeaponPtr( BestItem )->SetRenderState(
+                new_weapon::RENDER_STATE_PLAYER );
+            if( BestItem != m_CurrentWeaponItem )
+            {
+                SetNextWeapon2( BestItem, TRUE, FALSE );
+                SetAnimState( ANIM_STATE_PICKUP );
+            }
+        }
+    }
+
+    for( s32 WeaponIndex = 0; WeaponIndex < INVEN_NUM_WEAPONS; ++WeaponIndex )
+    {
+        const inven_item Item = inventory2::WeaponIndexToItem( WeaponIndex );
+        if( Item == INVEN_NULL )
+            continue;
+
+        new_weapon* pWeapon = GetWeaponPtr( Item );
+        if( !pWeapon )
+            continue;
+
+        vr_weapon_runtime& Runtime = m_VrWeaponRuntime[WeaponIndex];
+        if( !m_Inventory2.HasItem( Item ) || Item == INVEN_WEAPON_MUTATION )
+        {
+            pWeapon->SetVisible( FALSE );
+            Runtime.Initialized = FALSE;
+            continue;
+        }
+
+        matrix4 Socket = Body;
+        matrix4 LocalYaw;
+        LocalYaw.Setup( vector3( 0.0f, 1.0f, 0.0f ),
+                        HolsterYaw[WeaponIndex & 1] );
+        Socket = Body * LocalYaw;
+        vector3 SocketBase = GetPosition();
+        SocketBase.GetY() -= AvatarCrouchOffset;
+        const vector3 SocketPos =
+            SocketBase +
+            Body.RotateVector( HolsterOffsets[WeaponIndex % 6] );
+        Socket.SetTranslation( SocketPos );
+
+        if( !Runtime.Initialized )
+        {
+            Runtime.State = VR_WEAPON_HOLSTERED;
+            Runtime.Transform = Socket;
+            Runtime.Initialized = TRUE;
+        }
+
+        switch( Runtime.State )
+        {
+        case VR_WEAPON_HOLSTERED:
+            Runtime.Transform = Socket;
+            break;
+
+        case VR_WEAPON_HELD:
+            if( ( Runtime.Hand >= 0 ) && HandValid[Runtime.Hand] )
+            {
+                Runtime.Transform = HandTransforms[Runtime.Hand];
+            }
+            break;
+
+        case VR_WEAPON_DROPPED:
+        {
+            const vector3 OldPos = Runtime.Transform.GetTranslation();
+            Runtime.Velocity.GetY() -= 980.0f * DeltaTime;
+            const vector3 NewPos = OldPos + Runtime.Velocity * DeltaTime;
+            const f32 Travel = ( NewPos - OldPos ).Length();
+            if( Travel > 0.001f )
+            {
+                g_CollisionMgr.UseLowPoly();
+                g_CollisionMgr.SphereSetup( GetGuid(), OldPos, NewPos, 7.0f );
+                if( g_CollisionMgr.CheckCollisions(
+                        object::TYPE_ALL_TYPES,
+                        (object::object_attr)( object::ATTR_BLOCKS_CHARACTER |
+                                               object::ATTR_BLOCKS_LARGE_PROJECTILES ),
+                        object::ATTR_COLLISION_PERMEABLE ) &&
+                    g_CollisionMgr.m_nCollisions > 0 )
+                {
+                    const collision_mgr::collision& Collision =
+                        g_CollisionMgr.m_Collisions[0];
+                    const f32 HitT = x_clamp( Collision.T - 0.01f,
+                                              0.0f, 1.0f );
+                    Runtime.Transform.SetTranslation(
+                        OldPos + ( NewPos - OldPos ) * HitT );
+                    const f32 NormalSpeed =
+                        v3_Dot( Runtime.Velocity, Collision.Plane.Normal );
+                    if( NormalSpeed < 0.0f )
+                        Runtime.Velocity -=
+                            Collision.Plane.Normal * ( 1.35f * NormalSpeed );
+                    if( Collision.Plane.Normal.GetY() > 0.55f )
+                    {
+                        Runtime.Velocity.GetX() *= 0.72f;
+                        Runtime.Velocity.GetZ() *= 0.72f;
+                    }
+                }
+                else
+                {
+                    Runtime.Transform.SetTranslation( NewPos );
+                }
+            }
+
+            Runtime.ReturnTimer -= DeltaTime;
+            if( Runtime.ReturnTimer <= 0.0f )
+            {
+                Runtime.State = VR_WEAPON_RETURNING;
+                Runtime.ReturnTimer = 0.0f;
+                Runtime.ReturnStart = Runtime.Transform.GetTranslation();
+                Runtime.ReturnRotation = quaternion( Runtime.Transform );
+                Runtime.Velocity.Zero();
+            }
+            break;
+        }
+
+        case VR_WEAPON_RETURNING:
+        {
+            Runtime.ReturnTimer += DeltaTime;
+            const f32 T = x_clamp( Runtime.ReturnTimer / 0.45f, 0.0f, 1.0f );
+            const f32 Ease = T * T * ( 3.0f - 2.0f * T );
+            Runtime.Transform = Socket;
+            Runtime.Transform.SetTranslation(
+                Runtime.ReturnStart +
+                ( Socket.GetTranslation() - Runtime.ReturnStart ) * Ease );
+            Runtime.Transform.SetRotation(
+                Blend( Runtime.ReturnRotation, quaternion( Socket ), Ease ) );
+            if( T >= 1.0f )
+                Runtime.State = VR_WEAPON_HOLSTERED;
+            break;
+        }
+        }
+
+        pWeapon->SetVisible( TRUE );
+        pWeapon->SetRenderState(
+            ( Item == INVEN_WEAPON_DESERT_EAGLE )
+                ? new_weapon::RENDER_STATE_PLAYER
+                : new_weapon::RENDER_STATE_NPC );
+        pWeapon->SetVrWorldTransform( Runtime.Transform );
+    }
+
+    for( s32 Hand = 0; Hand < 2; ++Hand )
+        m_VrPreviousGrip[Hand] = m_VrGripAmount[Hand];
+#else
+    (void)DeltaTime;
+#endif
 }

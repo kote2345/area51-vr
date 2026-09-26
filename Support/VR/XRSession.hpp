@@ -77,11 +77,14 @@ public:
     void            Shutdown        ( void );
     xbool           PollEvents      ( void );
     xbool           BeginFrame      ( void );
-    void            CaptureInput   ( ::input_event_buffer& Events );
+    void            CaptureInput   ( ::input_event_buffer& Events,
+                                      xbool InGameplay );
     xbool           GetEyeView      ( u32 Eye, eye_view& View ) const;
     xbool           GetControllerPose( u32 Hand, controller_pose& Pose ) const;
     xbool           GetControllerFingerInput( u32 Hand, f32& Grip,
                                               f32& Trigger ) const;
+    xbool           GetRightControllerFaceButtons( xbool& A,
+                                                    xbool& B ) const;
     xbool           RenderTestFrame ( void );
     xbool           PrepareFrame   ( const vulkan_frame_info& FrameInfo );
     xbool           PrepareQuadFrame( const vulkan_frame_info& FrameInfo,

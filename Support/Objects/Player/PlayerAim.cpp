@@ -1257,6 +1257,42 @@ radian3 player::ApplyAimDegredation( radian Pitch, radian Yaw )
     return radian3(P,Y,0);
 }
 //=========================================================================
+xbool player::GetVrHeldWeaponShot( new_weapon* pWeapon,
+                                    s32 iFirePoint,
+                                    vector3& Position,
+                                    radian3& Rotation )
+{
+#if defined( A51_ENABLE_OPENXR )
+    if( !IsVrAvatarMode() || !pWeapon ||
+        pWeapon->GetInvenItem() != m_CurrentWeaponItem ||
+        ( m_VrHeldWeapon[0] != m_CurrentWeaponItem &&
+          m_VrHeldWeapon[1] != m_CurrentWeaponItem ) )
+        return FALSE;
+
+    /* The single-gun animation can emit a right-hand fire event, but the
+     * world pistol has one barrel and uses its default firepoint. */
+    if( m_CurrentWeaponItem != INVEN_WEAPON_DUAL_SMP &&
+        m_CurrentWeaponItem != INVEN_WEAPON_DUAL_SHT )
+        iFirePoint = new_weapon::FIRE_POINT_DEFAULT;
+
+    vector3 Direction;
+    if( !pWeapon->GetVrWorldFiringRay( Position, Direction, iFirePoint ) )
+        return FALSE;
+
+    radian Pitch, Yaw;
+    Direction.GetPitchYaw( Pitch, Yaw );
+    Rotation = radian3( Pitch, Yaw, 0.0f );
+    return TRUE;
+#else
+    (void)pWeapon;
+    (void)iFirePoint;
+    (void)Position;
+    (void)Rotation;
+    return FALSE;
+#endif
+}
+
+//=========================================================================
 radian3 player::GetProjectileTrajectory( void )
 {
     // the view's rotation
@@ -1266,6 +1302,18 @@ radian3 player::GetProjectileTrajectory( void )
     xbool bUseWeaponPos = FALSE;
 
     new_weapon* pWeaponObj = GetCurrentWeaponPtr();
+
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() && pWeaponObj )
+    {
+        vector3 FirePosition;
+        radian3 FireRotation;
+        if( GetVrHeldWeaponShot( pWeaponObj,
+                                 new_weapon::FIRE_POINT_DEFAULT,
+                                 FirePosition, FireRotation ) )
+            return FireRotation;
+    }
+#endif
 
     // StartPosition will most likely be the "firepoint" of the weapon instead of coming out of your eyes.
     // This is for weapons like the Meson Cannon where you can see the projectile and the weapon.

@@ -711,6 +711,18 @@ void base_projectile::SetPainDegradation( f32 PainDropDist, f32 PainDropScale )
 
 //==============================================================================
 
+vector3 base_projectile::ComputeInitialVelocity( const radian3& InitRot,
+                                                 const vector3& InheritedVelocity,
+                                                 f32 Speed )
+{
+    vector3 Velocity( 0.0f, 0.0f, Speed );
+    Velocity.Rotate( InitRot );
+    Velocity += InheritedVelocity;
+    return Velocity;
+}
+
+//==============================================================================
+
 void base_projectile::Initialize( const vector3&        InitPos,
                                   const radian3&        InitRot,
                                   const vector3&        InheritedVelocity,
@@ -755,9 +767,7 @@ void base_projectile::Initialize( const vector3&        InitPos,
     m_Speed         = Speed;
 
     // Set velocity
-    m_Velocity = vector3( 0.0f , 0.0f , m_Speed);
-    m_Velocity.Rotate( InitRot );
-    m_Velocity += InheritedVelocity;
+    m_Velocity = ComputeInitialVelocity( InitRot, InheritedVelocity, m_Speed );
 }
 
 //==============================================================================

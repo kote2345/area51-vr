@@ -50,6 +50,11 @@
 #include "Objects/LoreObject.hpp"
 #include "Objects/Camera.hpp"
 
+#if defined( A51_ENABLE_OPENXR )
+#include "VR/XRSession.hpp"
+extern a51::xr::VulkanSession g_XRSession;
+#endif
+
 #ifdef X_EDITOR
 #include "../../../Apps/Editor/Project.hpp"
 #else
@@ -181,6 +186,27 @@ void player::UpdateMoveLookInput(void)
 void player::OnButtonInput( f32 DeltaTime )
 {
     PlayerInputState const& Input = m_Input.GetState();
+    xbool bVrRightCrouchPressed = FALSE;
+    xbool bVrRightJumpPressed = FALSE;
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() )
+    {
+        xbool RightA = FALSE;
+        xbool RightB = FALSE;
+        if( g_XRSession.GetRightControllerFaceButtons( RightA, RightB ) )
+        {
+            bVrRightCrouchPressed = RightA && !m_VrPreviousRightA;
+            bVrRightJumpPressed = RightB && !m_VrPreviousRightB;
+            m_VrPreviousRightA = RightA;
+            m_VrPreviousRightB = RightB;
+        }
+        else
+        {
+            m_VrPreviousRightA = FALSE;
+            m_VrPreviousRightB = FALSE;
+        }
+    }
+#endif
 
     // don't allow player to switch weapons, zoom in, attack, etc.
     if( m_bHidePlayerArms )
@@ -323,9 +349,13 @@ void player::OnButtonInput( f32 DeltaTime )
     }
 
     player_profile& p = g_StateMgr.GetActiveProfile(g_StateMgr.GetProfileListIndex(m_LocalSlot));
-    if( p.GetCrouchOn() )
+    // VR right-A crouch is a press-to-toggle action. OpenXR publishes button
+    // transitions, not a held gamepad state, and the VR binding must work
+    // regardless of the desktop hold/toggle preference.
+    if( p.GetCrouchOn() || IsVrAvatarMode() )
     {
-        xbool CrouchKeyPressed = Input.WasPressed( PlayerAction::Crouch );
+        xbool CrouchKeyPressed = Input.WasPressed( PlayerAction::Crouch ) ||
+                                 bVrRightCrouchPressed;
         if( CrouchKeyPressed )
         {
             // crouch is a toggle and we're crouching so turn it off
@@ -388,7 +418,7 @@ void player::OnButtonInput( f32 DeltaTime )
     {
         m_JumpBufferTime = MAX( 0.0f, m_JumpBufferTime - DeltaTime );
 
-        if( Input.WasPressed( PlayerAction::Jump ) )
+        if( Input.WasPressed( PlayerAction::Jump ) || bVrRightJumpPressed )
             m_JumpBufferTime = s_JumpBufferDuration;
 
         if( (m_JumpBufferTime > 0.0f) && !m_Physics.GetFallMode() )

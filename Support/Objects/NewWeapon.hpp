@@ -356,6 +356,7 @@ public:
     xbool                       HasSecondaryAmmo        ( void ) { return m_HasSecondaryAmmo; }
     
     virtual xbool               GetFiringBonePosition   ( vector3 &Pos, s32 iBone = FIRE_POINT_DEFAULT );
+    virtual xbool               GetFiringBoneDirection  ( vector3 &Direction, s32 iBone = FIRE_POINT_DEFAULT );
     virtual xbool               GetAimBonePosition      ( vector3 &Pos, s32 iBone = FIRE_POINT_DEFAULT );
 
             xbool               CheckFirePoint          ( void );
@@ -383,6 +384,17 @@ public:
     static  char*               GetWeaponPrefixFromInvType2( inven_item WeaponItem );
 
     virtual void                SetRenderState          ( render_state RenderState );
+            xbool               HasVrWorldModel         ( void );
+            void                SetVrWorldTransform     ( const matrix4& L2W );
+            xbool               GetVrWorldFiringRay     ( vector3& Position,
+                                                          vector3& Direction,
+                                                          s32 iBone = FIRE_POINT_DEFAULT );
+            xbool               GetVrWorldFiringBoneDirection
+                                                    ( vector3& Direction,
+                                                      s32 iBone = FIRE_POINT_DEFAULT );
+            xbool               GetVrWorldFiringBonePosition
+                                                    ( vector3& Position,
+                                                      s32 iBone = FIRE_POINT_DEFAULT );
 
     reticle_radius_parameters   GetReticleRadiusParameters      ( void ) const    { return m_ReticleRadiusParameters; }
     reticle_radius_parameters   GetAltReticleRadiusParameters   ( void ) const { return m_AltReticleRadiusParameters; }

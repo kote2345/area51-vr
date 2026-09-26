@@ -74,8 +74,12 @@ public:
                                                 f32         Speed,
                                                 guid        OwnerGuid,
                                                 pain_handle PainID,
-                                                xbool       bHitLiving = TRUE,
-                                                s32         iFirePoint = 0 );
+                                          xbool       bHitLiving = TRUE,
+                                          s32         iFirePoint = 0 );
+
+    static vector3  ComputeInitialVelocity( const radian3& InitRot,
+                                            const vector3& InheritedVelocity,
+                                            f32 Speed );
 
     virtual void    StartFlyby          ( void );
     inline const vector3& GetInitialPos ( void ) { return m_InitialPosition; }

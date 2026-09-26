@@ -10,6 +10,7 @@
 //=========================================================================
 
 #include "Player.hpp"
+#include "Objects/BaseProjectile.hpp"
 #include "Render/PrimitiveDebug.hpp"
 #include "GameLib/RenderContext.hpp"
 #include "Objects/HudObject.hpp"
@@ -163,6 +164,27 @@ static xbool GetVRHandTarget( const player& Player,
 } // anonymous namespace
 #endif
 
+xbool player::GetVrHandTransform( u32 Hand, matrix4& Transform ) const
+{
+#if defined( A51_ENABLE_OPENXR )
+    if( !IsVrAvatarMode() )
+        return FALSE;
+
+    vector3 Position;
+    matrix4 Rotation;
+    if( !GetVRHandTarget( *this, Hand, Position, Rotation ) )
+        return FALSE;
+
+    Transform = Rotation;
+    Transform.SetTranslation( Position );
+    return TRUE;
+#else
+    (void)Hand;
+    (void)Transform;
+    return FALSE;
+#endif
+}
+
 s32 player::GetVrAvatarBoneCount( void )
 {
 #if defined( A51_ENABLE_OPENXR )
@@ -210,7 +232,22 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
         return pMatrices;
     x_memcpy( pSolved, pMatrices, nActiveBones * sizeof( matrix4 ) );
 
-    xbool bApplied = FALSE;
+    /* The VR camera and controller targets are lowered by the gameplay
+     * crouch offset. Translate the full rendered skeleton too: the crouch
+     * animation bends the legs, but does not lower the animation root enough
+     * to keep the feet planted. */
+    const f32 CrouchOffset = m_fCurrentCrouchFactor * 70.0f;
+    if( CrouchOffset > 0.0f )
+    {
+        for( s32 Bone = 0; Bone < nActiveBones; ++Bone )
+        {
+            vector3 Position = pSolved[Bone].GetTranslation();
+            Position.GetY() -= CrouchOffset;
+            pSolved[Bone].SetTranslation( Position );
+        }
+    }
+
+    xbool bApplied = ( CrouchOffset > 0.0f );
 #if defined(TARGET_ANDROID)
     static u32 IKTraceFrame = 0;
     const xbool TraceVRIK = ( (++IKTraceFrame % 90u) == 0u );
@@ -238,9 +275,16 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
             continue;
         }
 
-        const vector3 Shoulder = m_Loco.m_Player.GetBonePosition( UpperBones[Hand] );
-        const vector3 Elbow = m_Loco.m_Player.GetBonePosition( ForearmBones[Hand] );
-        const vector3 Wrist = m_Loco.m_Player.GetBonePosition( HandBones[Hand] );
+        vector3 Shoulder = m_Loco.m_Player.GetBonePosition( UpperBones[Hand] );
+        vector3 Elbow = m_Loco.m_Player.GetBonePosition( ForearmBones[Hand] );
+        vector3 Wrist = m_Loco.m_Player.GetBonePosition( HandBones[Hand] );
+        if( CrouchOffset > 0.0f )
+        {
+            const vector3 AvatarOffset( 0.0f, -CrouchOffset, 0.0f );
+            Shoulder += AvatarOffset;
+            Elbow += AvatarOffset;
+            Wrist += AvatarOffset;
+        }
         const f32 UpperLength = ( Elbow - Shoulder ).Length();
         const f32 ForearmLength = ( Wrist - Elbow ).Length();
 
@@ -377,7 +421,8 @@ const matrix4* player::ApplyVrHeadVisibility( const matrix4* pMatrices,
     for( s32 iRoot = 0; iRoot < nHeadRoots; ++iRoot )
     {
         const s32 Root = HeadRoots[iRoot];
-        const vector3 HeadPivot = m_Loco.m_Player.GetBonePosition( Root );
+        vector3 HeadPivot = m_Loco.m_Player.GetBonePosition( Root );
+        HeadPivot.GetY() -= m_fCurrentCrouchFactor * 70.0f;
         matrix4 CollapsedHead;
         CollapsedHead.Setup( vector3( 0.0f, 0.0f, 0.0f ),
                              quaternion( 0.0f, 0.0f, 0.0f, 1.0f ),
@@ -405,28 +450,100 @@ void player::UpdateVrPistolAttachment( const matrix4* pMatrices,
 {
 #if defined( A51_ENABLE_OPENXR )
     if( !IsVrAvatarMode() ||
-        ( m_CurrentWeaponItem != INVEN_WEAPON_DESERT_EAGLE ) ||
         !pMatrices || !m_Loco.IsAnimLoaded() )
     {
         return;
     }
 
-    /* weapon_attach is authored around the forearm on this soldier rig; the
-     * actual hand bone keeps the pistol grip at the controller-driven wrist. */
+    const s32 WeaponIndex =
+        inventory2::ItemToWeaponIndex( INVEN_WEAPON_DESERT_EAGLE );
+    if( WeaponIndex < 0 || WeaponIndex >= INVEN_NUM_WEAPONS ||
+        m_VrWeaponRuntime[WeaponIndex].State != VR_WEAPON_HELD )
+        return;
+
+    const s32 Hand = m_VrWeaponRuntime[WeaponIndex].Hand;
+    if( Hand < 0 || Hand > 1 )
+        return;
+
+    /* Preserve the authored grip offset, but carry the socket through the
+     * hand IK transform. The attach bone is not necessarily a child of the
+     * wrist, so pMatrices[AttachBone] alone can lag behind the visible hand. */
+    static const char* const WeaponAttachBones[2] =
+    {
+        "Attach_L", "Attach_R"
+    };
+    const s32 AttachBone = m_Loco.m_Player.GetBoneIndex(
+        WeaponAttachBones[Hand] );
     const s32 HandBone = m_Loco.m_Player.GetBoneIndex(
-        a51::xr::kMultiplayerHandBones[1] );
-    if( HandBone < 0 || HandBone >= nActiveBones )
+        a51::xr::kMultiplayerHandBones[Hand] );
+    if( AttachBone < 0 || AttachBone >= nActiveBones ||
+        HandBone < 0 || HandBone >= nActiveBones )
         return;
 
     new_weapon* pWeapon = GetCurrentWeaponPtr();
-    if( !pWeapon )
+    if( !pWeapon || m_CurrentWeaponItem != INVEN_WEAPON_DESERT_EAGLE )
         return;
 
-    /* Use the post-IK wrist matrix, then restore the hand's authored bind
-     * translation to put the gun grip at the center of the palm. */
-    matrix4 HandL2W = pMatrices[HandBone];
-    HandL2W.PreTranslate( m_Loco.m_Player.GetBoneBindPosition( HandBone ) );
-    pWeapon->OnTransform( HandL2W );
+    matrix4 HandBefore = m_Loco.m_Player.GetBoneL2W( HandBone );
+    HandBefore.PreTranslate(
+        m_Loco.m_Player.GetBoneBindPosition( HandBone ) );
+    matrix4 HandBeforeInverse = HandBefore;
+    if( !HandBeforeInverse.InvertRT() )
+        return;
+    matrix4 HandAfter = pMatrices[HandBone];
+    HandAfter.PreTranslate(
+        m_Loco.m_Player.GetBoneBindPosition( HandBone ) );
+    matrix4 AttachBefore = m_Loco.m_Player.GetBoneL2W( AttachBone );
+    AttachBefore.PreTranslate(
+        m_Loco.m_Player.GetBoneBindPosition( AttachBone ) );
+    matrix4 WeaponAttachL2W =
+        HandAfter * HandBeforeInverse * AttachBefore;
+    matrix4 ControllerHand;
+    if( GetVrHandTransform( Hand, ControllerHand ) )
+    {
+        vr_weapon_runtime& Runtime = m_VrWeaponRuntime[WeaponIndex];
+        if( Hand == 1 )
+        {
+            /* The NPC weapon rig's barrel axis is perpendicular to the
+             * tracked hand's forward axis. Rotate it 90 degrees around local
+             * X so the barrel follows the forward aiming direction. */
+            WeaponAttachL2W.SetTranslation(
+                ControllerHand.GetTranslation() );
+            matrix4 ControllerHandInverse = ControllerHand;
+            if( ControllerHandInverse.InvertRT() )
+            {
+                Runtime.HandGripOffset =
+                    ControllerHandInverse * WeaponAttachL2W;
+                Runtime.HandGripOffset.SetTranslation(
+                    vector3( 0.0f, 0.0f, 0.0f ) );
+                matrix4 WeaponAxisCorrection;
+                WeaponAxisCorrection.Setup(
+                    vector3( 1.0f, 0.0f, 0.0f ), R_90 + R_180 );
+                Runtime.HandGripOffset =
+                    Runtime.HandGripOffset * WeaponAxisCorrection;
+                Runtime.HandGripOffset.SetTranslation(
+                    vector3( 0.0f, -8.0f, -8.0f ) );
+                Runtime.HandGripOffsetInitialized = TRUE;
+                WeaponAttachL2W = ControllerHand * Runtime.HandGripOffset;
+            }
+        }
+        else
+        {
+            matrix4 ControllerHandInverse = ControllerHand;
+            if( ControllerHandInverse.InvertRT() )
+            {
+                if( !Runtime.HandGripOffsetInitialized )
+                {
+                    Runtime.HandGripOffset =
+                        ControllerHandInverse * WeaponAttachL2W;
+                    Runtime.HandGripOffsetInitialized = TRUE;
+                }
+                WeaponAttachL2W = ControllerHand * Runtime.HandGripOffset;
+            }
+        }
+    }
+    m_VrWeaponRuntime[WeaponIndex].Transform = WeaponAttachL2W;
+    pWeapon->SetVrWorldTransform( WeaponAttachL2W );
     pWeapon->SetZone1( GetZone1() );
     pWeapon->SetZone2( GetZone2() );
 #else
@@ -563,6 +680,62 @@ void player::OnRenderTransparent(void)
 
 #endif // X_RETAIL
 
+    if( IsVrAvatarMode() )
+    {
+        for( s32 WeaponIndex = 0; WeaponIndex < INVEN_NUM_WEAPONS;
+             ++WeaponIndex )
+        {
+            const inven_item Item =
+                inventory2::WeaponIndexToItem( WeaponIndex );
+            if( Item == INVEN_NULL || Item == INVEN_WEAPON_MUTATION ||
+                !m_Inventory2.HasItem( Item ) )
+                continue;
+
+            new_weapon* pVrWeapon = GetWeaponPtr( Item );
+            if( !pVrWeapon )
+                continue;
+
+            const new_weapon::render_state SavedState =
+                pVrWeapon->GetRenderState();
+            const xbool HasWorldModel = pVrWeapon->HasVrWorldModel();
+            const xbool IsHeld =
+                ( m_VrWeaponRuntime[WeaponIndex].State == VR_WEAPON_HELD );
+            pVrWeapon->SetRenderState(
+                HasWorldModel
+                    ? new_weapon::RENDER_STATE_NPC
+                    : new_weapon::RENDER_STATE_PLAYER );
+            pVrWeapon->OnRenderTransparent();
+            if( IsHeld && Item == m_CurrentWeaponItem )
+            {
+                vector3 FirePosition;
+                radian3 FireTrajectory;
+                if( GetVrHeldWeaponShot( pVrWeapon,
+                                         new_weapon::FIRE_POINT_DEFAULT,
+                                         FirePosition, FireTrajectory ) )
+                {
+                    m_VrShownShotWeapon = Item;
+                    m_VrShownShotPosition = FirePosition;
+                    m_VrShownShotRotation = FireTrajectory;
+                    m_VrShownShotValid = TRUE;
+                    /* Use the same velocity calculation as the projectile.
+                     * VR firing passes zero inherited velocity, so the
+                     * arbitrary length only scales the displayed line. */
+                    const vector3 FireVelocity =
+                        base_projectile::ComputeInitialVelocity(
+                            FireTrajectory, vector3( 0.0f, 0.0f, 0.0f ),
+                            3000.0f );
+                    render::debug::Line(
+                        FirePosition,
+                        FirePosition + FireVelocity,
+                        XCOLOR_GREEN,
+                        render::PRIMITIVE_DEPTH_READ_ONLY );
+                }
+            }
+            pVrWeapon->SetRenderState( SavedState );
+        }
+        return;
+    }
+
     //render weapon
     new_weapon* pWeapon = GetCurrentWeaponPtr();
     if( pWeapon )
@@ -586,6 +759,70 @@ void player::OnRenderTransparent(void)
 
 void player::OnRenderWeapon( void )
 {
+    if( IsVrAvatarMode() )
+    {
+        /* Refresh held models from the newest tracked hand pose immediately
+         * before drawing. Simulation may run slower than the headset display. */
+        for( s32 Hand = 0; Hand < 2; ++Hand )
+        {
+            const inven_item Item = m_VrHeldWeapon[Hand];
+            const s32 WeaponIndex = inventory2::ItemToWeaponIndex( Item );
+            if( Item == INVEN_NULL || WeaponIndex < 0 ||
+                WeaponIndex >= INVEN_NUM_WEAPONS )
+                continue;
+
+            matrix4 HandTransform;
+            if( !GetVrHandTransform( Hand, HandTransform ) )
+                continue;
+            vr_weapon_runtime& Runtime = m_VrWeaponRuntime[WeaponIndex];
+            if( Runtime.HandGripOffsetInitialized )
+                HandTransform = HandTransform * Runtime.HandGripOffset;
+            Runtime.Transform = HandTransform;
+            new_weapon* pHeldWeapon = GetWeaponPtr( Item );
+            if( pHeldWeapon )
+                pHeldWeapon->SetVrWorldTransform( HandTransform );
+        }
+
+        for( s32 WeaponIndex = 0; WeaponIndex < INVEN_NUM_WEAPONS;
+             ++WeaponIndex )
+        {
+            const inven_item Item =
+                inventory2::WeaponIndexToItem( WeaponIndex );
+            if( Item == INVEN_NULL || Item == INVEN_WEAPON_MUTATION ||
+                !m_Inventory2.HasItem( Item ) )
+                continue;
+
+            new_weapon* pVrWeapon = GetWeaponPtr( Item );
+            if( !pVrWeapon )
+                continue;
+
+            const new_weapon::render_state SavedState =
+                pVrWeapon->GetRenderState();
+            const xbool HasWorldModel = pVrWeapon->HasVrWorldModel();
+#if defined(TARGET_ANDROID)
+            if( Item == INVEN_WEAPON_DESERT_EAGLE )
+            {
+                static xbool ReportedVrPistolModel = FALSE;
+                if( !ReportedVrPistolModel )
+                {
+                    __android_log_print( ANDROID_LOG_INFO, "A51VR",
+                        "vr pistol visual model=%s",
+                        HasWorldModel ? "NPC" : "PLAYER fallback" );
+                    ReportedVrPistolModel = TRUE;
+                }
+            }
+#endif
+            pVrWeapon->SetRenderState(
+                HasWorldModel
+                    ? new_weapon::RENDER_STATE_NPC
+                    : new_weapon::RENDER_STATE_PLAYER );
+            pVrWeapon->RenderWeapon( FALSE, GetFloorColor(),
+                                     ( m_CloakState == CLOAKING_ON ) );
+            pVrWeapon->SetRenderState( SavedState );
+        }
+        return;
+    }
+
     new_weapon* pWeapon = GetCurrentWeaponPtr();
     if( IsVrAvatarMode() && pWeapon &&
         ( m_CurrentWeaponItem == INVEN_WEAPON_DESERT_EAGLE ) )
@@ -858,6 +1095,21 @@ void player::OnRender( void )
                         ( x_stristr( pMeshName, "HEAD" ) ||
                           x_stristr( pMeshName, "FACE" ) ||
                           x_stristr( pMeshName, "HELMET" ) ) )
+                        m_SkinInst.SetVMeshBit( iMesh, FALSE );
+
+                    /* In a crouched first-person view, keep the arms and
+                     * upper torso visible but remove separately modeled
+                     * lower-body pieces from the near-camera view. Some
+                     * campaign skins combine these parts into BODY, so only
+                     * disable virtual meshes explicitly named as legs/feet. */
+                    if( pMeshName && m_fCurrentCrouchFactor > 0.01f &&
+                        ( x_stristr( pMeshName, "LEG" ) ||
+                          x_stristr( pMeshName, "THIGH" ) ||
+                          x_stristr( pMeshName, "SHIN" ) ||
+                          x_stristr( pMeshName, "KNEE" ) ||
+                          x_stristr( pMeshName, "BOOT" ) ||
+                          x_stristr( pMeshName, "FOOT" ) ||
+                          x_stristr( pMeshName, "PANTS" ) ) )
                         m_SkinInst.SetVMeshBit( iMesh, FALSE );
                 }
             }

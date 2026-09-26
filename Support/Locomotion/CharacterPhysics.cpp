@@ -1221,9 +1221,28 @@ void character_physics::UpdatePhysics( f32 DeltaTime, f32 IncomingVerticalVeloci
 
 //=========================================================================
 
-xbool character_physics::SetCrouchParametric( f32 NormalizePercent )
+xbool character_physics::SetCrouchParametric( f32 NormalizePercent,
+                                               xbool IgnoreCrouchCollision )
 {
     // TO DO: Traub - can you put the appropriate test here please - thanks!
+
+    if( IgnoreCrouchCollision )
+    {
+        ASSERT( NormalizePercent >= 0.0f );
+        ASSERT( NormalizePercent <= 1.0f );
+
+        const f32 NewHeight =
+            m_NavCollisionHeight -
+            ( NormalizePercent * m_NavCollisionCrouchOffset );
+        if( m_bFallMode )
+        {
+            const f32 HeadPosition =
+                m_Position.GetY() + m_NavCollisionCurentHeight;
+            m_Position.GetY() = HeadPosition - NewHeight;
+        }
+        m_NavCollisionCurentHeight = NewHeight;
+        return TRUE;
+    }
     
     // Playing a multi-player/split screen game?
     if( 0 )

@@ -723,6 +723,29 @@ void pickup::OnColNotify( object& Object )
 
 //==============================================================================
 
+void pickup::CompleteVrPickup( actor& Actor )
+{
+    if( (m_State != STATE_IDLE) && (m_State != STATE_DECAYING) )
+        return;
+    if( !m_bIsActive || !m_bTakeable )
+        return;
+
+#ifndef X_EDITOR
+    if( !g_NetworkMgr.IsServer() )
+        return;
+#endif
+
+    m_bTakeable = FALSE;
+    m_bHasBeenPickedup = TRUE;
+#ifndef X_EDITOR
+    m_PlayerIndex = Actor.net_GetSlot();
+    m_NetDirtyBits |= DIRTY_ASSIGN;
+#endif
+    ProcessTake( Actor );
+}
+
+//==============================================================================
+
 void pickup::ProcessTake( actor& Actor )
 {
     #ifndef X_EDITOR

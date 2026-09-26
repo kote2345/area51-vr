@@ -41,7 +41,8 @@ public:
     void                SetColCrouchOffset  ( f32 Offset ) { m_NavCollisionCrouchOffset = Offset; }
     void                SetMaxCollsions     ( s32 Max ) { m_MaxCollisions = Max; }
     bbox                GetBBox             ( void ) const;
-    xbool               SetCrouchParametric ( f32 NormalizePercent );
+    xbool               SetCrouchParametric ( f32 NormalizePercent,
+                                               xbool IgnoreCrouchCollision = FALSE );
     xbool               Jump                ( f32 YVel );
     void                FlingWithVelocity   ( const vector3& Velocity,
                                                     f32      AirControl,

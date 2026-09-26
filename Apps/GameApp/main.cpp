@@ -767,7 +767,8 @@ static const eng_frame_stage s_XRFrameStage =
 static void XRInput_Capture( input_event_buffer& Events )
 {
     if( g_XRGameFrameBridge )
-        g_XRSession.CaptureInput( Events );
+        g_XRSession.CaptureInput(
+            Events, GetGameInputContext() == INGAME_CONTEXT );
 }
 
 static xbool InitializeOpenXRBeforeEngine( void )
