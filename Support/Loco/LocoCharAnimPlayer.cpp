@@ -68,6 +68,10 @@ loco_char_anim_player::loco_char_anim_player     ( void )
 
     // Animation vars
     m_nActiveBones = 0 ;
+    m_bVrLegOnlyPose = FALSE;
+    m_VrBodyYaw = 0.0f;
+    m_VrGrip[0] = m_VrGrip[1] = 0.0f;
+    m_VrTrigger[0] = m_VrTrigger[1] = 0.0f;
     m_WorldPos.Zero() ;
 
     // Track controller vars
@@ -206,6 +210,48 @@ void loco_char_anim_player::SetNActiveBones ( s32 nBones )
 
     // Keep
     m_nActiveBones = nBones ;
+}
+
+//==========================================================================
+
+void loco_char_anim_player::SetVrLegOnlyPose( xbool Enable )
+{
+    if( m_bVrLegOnlyPose != Enable )
+    {
+        m_bVrLegOnlyPose = Enable;
+        if( Enable )
+            SetIKSolver( NULL );
+        DirtyCachedL2Ws();
+    }
+}
+
+//==========================================================================
+
+void loco_char_anim_player::SetVrBodyYaw( radian Yaw )
+{
+    if( x_abs( x_MinAngleDiff( m_VrBodyYaw, Yaw ) ) > 0.001f )
+    {
+        m_VrBodyYaw = x_ModAngle2( Yaw );
+        DirtyCachedL2Ws();
+    }
+}
+
+//==========================================================================
+
+void loco_char_anim_player::SetVrFingerInput( s32 Hand, f32 Grip,
+                                              f32 Trigger )
+{
+    if( Hand < 0 || Hand > 1 )
+        return;
+    Grip = x_clamp( Grip, 0.0f, 1.0f );
+    Trigger = x_clamp( Trigger, 0.0f, 1.0f );
+    if( ( x_abs( m_VrGrip[Hand] - Grip ) > 0.001f ) ||
+        ( x_abs( m_VrTrigger[Hand] - Trigger ) > 0.001f ) )
+    {
+        m_VrGrip[Hand] = Grip;
+        m_VrTrigger[Hand] = Trigger;
+        DirtyCachedL2Ws();
+    }
 }
 
 //=========================================================================
@@ -1083,7 +1129,7 @@ void loco_char_anim_player::GetInterpKeys( const matrix4& L2W, anim_key* pKey )
     Info.m_Local2World = L2W ;
 
     // Compute final facing yaw ( R_180 is because anims are exported 180 degrees off in max!)
-    f32 FacingYaw = GetFacingYaw() + R_180;
+    f32 FacingYaw = ( m_bVrLegOnlyPose ? m_VrBodyYaw : GetFacingYaw() ) + R_180;
     Info.m_Local2AnimSpace.Setup( radian3( 0.0f, FacingYaw, 0.0f ) );
     
     // Set to identity since we are doing the yaw fixup last now!
@@ -1113,6 +1159,139 @@ void loco_char_anim_player::GetInterpKeys( const matrix4& L2W, anim_key* pKey )
 
         // Mix into keys
         pTrack->MixKeys( Info, pKey );
+    }
+
+    if( m_bVrLegOnlyPose && m_nActiveBones > 0 )
+    {
+        /* Keep the animated leg chains, but take the root and the rest of the
+         * body from animation 0 (the authored bind pose). The root yaw is
+         * applied separately from the current VR body heading below. */
+        const s32 LegRoots[2] =
+        {
+            m_AnimCurrTrack.GetBoneIndex( "B_01_Leg_L_Thigh" ),
+            m_AnimCurrTrack.GetBoneIndex( "B_01_Leg_R_Thigh" )
+        };
+        anim_key* MotionKeys = base_player::GetMixBuffer(
+            base_player::MIX_BUFFER_TEMP );
+        anim_key* FingerKeys = base_player::GetMixBuffer(
+            base_player::MIX_BUFFER_CONTROLLER );
+        const anim_group* pGroup = m_hAnimGroup.GetPointer();
+        if( MotionKeys && FingerKeys && pGroup && (pGroup->GetNAnims() > 0) &&
+            ( LegRoots[0] >= 0 || LegRoots[1] >= 0 ) )
+        {
+            x_memcpy( MotionKeys, pKey,
+                      m_nActiveBones * sizeof( anim_key ) );
+            pGroup->GetAnimInfo( 0 ).GetInterpKeys(
+                0.0f, pKey, m_nActiveBones );
+
+            /* Keep the animated leg chains after replacing the rest of the
+             * pose with the bind pose. */
+            for( s32 Bone = 1; Bone < m_nActiveBones; ++Bone )
+            {
+                s32 Parent = Bone;
+                xbool bLegBone = FALSE;
+                while( Parent >= 0 )
+                {
+                    if( ( Parent == LegRoots[0] ) ||
+                        ( Parent == LegRoots[1] ) )
+                    {
+                        bLegBone = TRUE;
+                        break;
+                    }
+                    Parent = pGroup->GetBoneParent( Parent );
+                }
+
+                if( bLegBone )
+                    pKey[Bone] = MotionKeys[Bone];
+            }
+
+            /* Save the unmodified bind pose for paired finger angle
+             * comparisons; pKey is edited as each finger is solved. */
+            x_memcpy( MotionKeys, pKey,
+                      m_nActiveBones * sizeof( anim_key ) );
+
+            /* Blend each finger's bind rotation toward the authored grip
+             * rotation. Local bind translations and scales stay fixed, so
+             * squeezing cannot stretch the finger joints. */
+            const s32 HandPoseAnim = pGroup->GetAnimIndex( "CROUCHAIM_IDLE" );
+            if( HandPoseAnim >= 0 )
+            {
+                pGroup->GetAnimInfo( HandPoseAnim ).GetInterpKeys(
+                    0.0f, FingerKeys, m_nActiveBones );
+                for( s32 Bone = 1; Bone < m_nActiveBones; ++Bone )
+                {
+                    const char* pBoneName = pGroup->GetBone( Bone ).Name;
+                    if( !pBoneName || !x_stristr( pBoneName, "B_03_Hand_" ) )
+                        continue;
+
+                    const s32 Hand = x_stristr( pBoneName, "_Hand_L_" ) ? 0 : 1;
+                    f32 Curl = 0.0f;
+                    const xbool bIndexFinger =
+                        ( x_stristr( pBoneName, "_Finger" ) != NULL );
+                    const xbool bThumb =
+                        ( x_stristr( pBoneName, "_Thumb" ) != NULL );
+                    if( x_stristr( pBoneName, "_Mit" ) ||
+                        bThumb )
+                        Curl = m_VrGrip[Hand];
+                    else if( bIndexFinger )
+                        Curl = m_VrTrigger[Hand];
+                    Curl = x_clamp( Curl * 1.2f, 0.0f, 1.0f );
+
+                    char PairName[34];
+                    x_strncpy( PairName, pBoneName, sizeof( PairName ) - 1 );
+                    PairName[sizeof( PairName ) - 1] = 0;
+                    PairName[10] = ( Hand == 0 ) ? 'R' : 'L';
+                    const s32 PairBone = pGroup->GetBoneIndex( PairName );
+                    if( PairBone < 0 || PairBone >= m_nActiveBones )
+                        continue;
+
+                    quaternion RestInverse = MotionKeys[Bone].Rotation;
+                    RestInverse.Invert();
+                    quaternion Bend = FingerKeys[Bone].Rotation * RestInverse;
+                    Bend.Normalize();
+                    if( Bend.W < 0.0f )
+                        Bend = quaternion( -Bend.X, -Bend.Y,
+                                           -Bend.Z, -Bend.W );
+
+                    quaternion PairRestInverse = MotionKeys[PairBone].Rotation;
+                    PairRestInverse.Invert();
+                    quaternion PairBend =
+                        FingerKeys[PairBone].Rotation * PairRestInverse;
+                    PairBend.Normalize();
+                    if( PairBend.W < 0.0f )
+                        PairBend = quaternion( -PairBend.X, -PairBend.Y,
+                                               -PairBend.Z, -PairBend.W );
+
+                    /* Use the same bend angle for matching left/right joints,
+                     * while each side keeps its own authored bend axis. */
+                    const f32 MaxBendAngle = MAX( Bend.GetAngle(),
+                                                  PairBend.GetAngle() );
+                    vector3 BendAxis = Bend.GetAxis();
+                    if( ( Hand == 0 ) && bThumb )
+                    {
+                        /* Use the right thumb as the canonical curl axis and
+                         * reflect its rotation into the left hand's local
+                         * frame. The authored left-thumb axis points slightly
+                        * down, which makes the two grips visibly diverge. */
+                        const vector3 RightThumbAxis = PairBend.GetAxis();
+                        BendAxis.Set( RightThumbAxis.GetX(),
+                                      -RightThumbAxis.GetY(),
+                                      -RightThumbAxis.GetZ() );
+                    }
+                    if( !BendAxis.SafeNormalize() )
+                        continue;
+                    const f32 BendStrength = bIndexFinger ? 2.0f : 1.4f;
+                    Bend.Setup( BendAxis, MaxBendAngle * BendStrength * Curl );
+                    pKey[Bone].Rotation = Bend * pKey[Bone].Rotation;
+                }
+            }
+
+            /* Lower the neck and head relative to the torso so the avatar's
+             * head anchor sits closer to the tracked HMD height. */
+            const s32 NeckBone = pGroup->GetBoneIndex( "B_01_Neck" );
+            if( NeckBone >= 0 && NeckBone < m_nActiveBones )
+                pKey[NeckBone].Translation.GetY() -= 18.0f;
+        }
     }
 
     // Apply fixup rotation AFTER the above blending has took place in animation space.

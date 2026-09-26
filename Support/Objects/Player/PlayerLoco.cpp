@@ -360,6 +360,9 @@ void player_loco::InitAnimIndices( void )
     if( !pAnimGroup )
         return;
 
+    const xbool bMilitaryNpcAnimGroup =
+        ( x_stristr( m_hAnimGroup.GetName(), "NPC_MILITARY_SMP" ) != NULL );
+
     // Setup for all weapons
     for( s32 iWeapon = 0; iWeapon < MP_WEAPON_COUNT; iWeapon++ )
     {
@@ -386,7 +389,7 @@ void player_loco::InitAnimIndices( void )
                 AnimIndex = pAnimGroup->GetAnimIndex( xfs( "CROUCHAIM_%s", pAnim + 7 ) );
 
             // Must be present for ghosts!
-            if( m_bGhostMode )
+            if( m_bGhostMode && !bMilitaryNpcAnimGroup )
             {
                 ASSERTS( AnimIndex != -1, xfs(" %s is missing %s_%s see Aaron", m_hAnimGroup.GetName(), pWeapon, pAnim ) ); 
             }
@@ -442,7 +445,7 @@ void player_loco::InitAnimIndices( void )
 
 #ifdef X_DEBUG
         // Must be present for ghosts!
-        if( m_bGhostMode )
+        if( m_bGhostMode && !bMilitaryNpcAnimGroup )
         {
             ASSERTS( ReloadAnimIndex    != -1, xfs( "%s is missing from %s see Aaron", pReloadAnimName,    m_hAnimGroup.GetName() ) ); 
             ASSERTS( PrimaryAnimIndex   != -1, xfs( "%s is missing from %s see Aaron", pPrimaryAnimName,   m_hAnimGroup.GetName() ) ); 
@@ -699,6 +702,15 @@ constraint_info s_ConInfo[] =
 void player_loco::InitIK( void )
 {
     s32 i;
+
+    // VR solves both arms from the tracked controllers after the base pose is
+    // built. This legacy constraint pulls only the left hand onto the weapon
+    // in the right hand and corrupts the VR left-arm chain before that solve.
+    if( m_Player.IsVrLegOnlyPose() )
+    {
+        m_Player.SetIKSolver( NULL );
+        return;
+    }
 
     // Lookup anim group
     const anim_group* pAnimGroup = m_hAnimGroup.GetPointer();

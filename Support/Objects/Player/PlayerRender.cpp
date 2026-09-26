@@ -176,29 +176,10 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
                                     s32 nActiveBones )
 {
 #if defined( A51_ENABLE_OPENXR )
-    /* Authored actions own the arms during transitions and interactions.
-     * Tracked targets take over again on locomotion and weapon-ready states. */
-    const xbool bDeferToAuthoredAnimation =
-        ( m_CurrentAnimState == ANIM_STATE_SWITCH_TO ) ||
-        ( m_CurrentAnimState == ANIM_STATE_SWITCH_FROM ) ||
-        ( m_CurrentAnimState == ANIM_STATE_THROW ) ||
-        ( m_CurrentAnimState == ANIM_STATE_PICKUP ) ||
-        ( m_CurrentAnimState == ANIM_STATE_DISCARD ) ||
-        ( m_CurrentAnimState == ANIM_STATE_MELEE ) ||
-        ( m_CurrentAnimState >= ANIM_STATE_MELEE_FROM_CENTER &&
-          m_CurrentAnimState <= ANIM_STATE_MELEE_END ) ||
-        ( m_CurrentAnimState == ANIM_STATE_COMBO_BEGIN ) ||
-        ( m_CurrentAnimState == ANIM_STATE_COMBO_HIT ) ||
-        ( m_CurrentAnimState == ANIM_STATE_COMBO_END ) ||
-        ( m_CurrentAnimState == ANIM_STATE_RELOAD ) ||
-        ( m_CurrentAnimState == ANIM_STATE_RELOAD_IN ) ||
-        ( m_CurrentAnimState == ANIM_STATE_RELOAD_OUT );
-
     if( !IsVrAvatarMode() || !pMatrices || nActiveBones <= 0 ||
         !m_Loco.IsAnimLoaded() || IsDead() ||
         m_CurrentAnimState == ANIM_STATE_DEATH ||
-        m_CurrentAnimState == ANIM_STATE_CHANGE_MUTATION ||
-        bDeferToAuthoredAnimation )
+        m_CurrentAnimState == ANIM_STATE_CHANGE_MUTATION )
     {
         return pMatrices;
     }
@@ -278,6 +259,7 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
             { Shoulder.GetX(), Shoulder.GetY(), Shoulder.GetZ() };
         const a51::xr::ik_vec3 IkTarget =
             { WristTarget.GetX(), WristTarget.GetY(), WristTarget.GetZ() };
+
         const a51::xr::ik_vec3 IkPole =
             { Elbow.GetX(), Elbow.GetY(), Elbow.GetZ() };
         a51::xr::arm_ik_result Result{};
@@ -324,8 +306,21 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
         CurrentHandRotation.ClearScale();
         if( CurrentHandRotation.InvertRT() )
         {
-            matrix4 HandDelta = HandTargetRotation * CurrentHandRotation;
-            const vector3 HandPivot = pSolved[HandBones[Hand]].GetTranslation();
+            /* The correction is constant in controller space. Its local Y
+             * axis runs along the grip toward the wrist, so rotating there
+             * preserves every subsequent controller orientation change. */
+            matrix4 WristCorrection;
+            WristCorrection.Setup( vector3( 0.0f, 1.0f, 0.0f ), R_180 );
+            matrix4 DesiredHandRotation =
+                HandTargetRotation * WristCorrection;
+            matrix4 HandDelta = DesiredHandRotation * CurrentHandRotation;
+            /* Skinning applies the hand bone's bind translation after this
+             * matrix. Rotate around that actual wrist joint, not the raw
+             * matrix origin, or controller rotation translates the hand by
+             * the bind-pose offset. */
+            const vector3 HandPivot =
+                pSolved[HandBones[Hand]] *
+                m_Loco.m_Player.GetBoneBindPosition( HandBones[Hand] );
             HandDelta.SetTranslation(
                 HandPivot - HandDelta.RotateVector( HandPivot ) );
             ApplyBoneDeltaToSubtree( *pGroup, pSolved, nActiveBones,
@@ -821,6 +816,37 @@ void player::OnRender( void )
              * actor's mask before weapon/effect draws or later views. */
             const virtual_mesh_mask SavedMask = m_SkinInst.GetVMeshMask();
             geom* pAvatarGeom = m_SkinInst.GetGeom();
+            static s32 s_VrBodyTraceCount = 0;
+            if( s_VrBodyTraceCount < 8 )
+            {
+                const skin_geom* pAvatarSkin = m_SkinInst.GetSkinGeom();
+                const s32 BodyVMesh = pAvatarGeom ? pAvatarGeom->GetVMeshIndex( "BODY" ) : -1;
+                const u64 LODMask = pAvatarGeom
+                                  ? m_SkinInst.GetLODMask( GetL2W() )
+                                  : 0;
+                x_DebugMsg( "[VR_BODY] render=%d geom=%s geomPtr=%p skin=%p meshes=%d bones=%d vmask=%08x lod=%08llx body=%d anim=%s loaded=%d\n",
+                            s_VrBodyTraceCount,
+                            m_SkinInst.GetSkinGeomName() ? m_SkinInst.GetSkinGeomName() : "(null)",
+                            pAvatarGeom,
+                            pAvatarSkin,
+                            pAvatarGeom ? pAvatarGeom->m_nVirtualMeshes : -1,
+                            pAvatarSkin ? pAvatarSkin->m_nBones : -1,
+                            SavedMask.VMeshMask,
+                            (unsigned long long)LODMask,
+                            BodyVMesh,
+                            m_hAnimGroup.GetName(),
+                            m_Loco.IsAnimLoaded() );
+                if( pAvatarGeom && s_VrBodyTraceCount == 0 )
+                {
+                    for( s32 iMesh = 0; iMesh < pAvatarGeom->m_nVirtualMeshes; ++iMesh )
+                    {
+                        x_DebugMsg( "[VR_BODY] vmesh[%d]=%s\n",
+                                    iMesh,
+                                    pAvatarGeom->GetVMeshName( iMesh ) );
+                    }
+                }
+                ++s_VrBodyTraceCount;
+            }
             if( pAvatarGeom )
             {
                 const s32 nMeshes = MIN( pAvatarGeom->m_nVirtualMeshes,

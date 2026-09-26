@@ -905,10 +905,26 @@ void actor::OnRender( void )
             return;
     #endif
 
+#if defined( A51_ENABLE_OPENXR )
+    const xbool bTraceVrAvatar = IsKindOf( player::GetRTTI() ) &&
+                                  player::GetSafeType( *this ).IsVrAvatarMode();
+    static s32 s_VrActorTraceCount = 0;
+#endif
+
     // Lookup skin geometry
     skin_geom* pSkinGeom = GetSkinInst().GetSkinGeom();
     if (!pSkinGeom)
+    {
+#if defined( A51_ENABLE_OPENXR )
+        if( bTraceVrAvatar && s_VrActorTraceCount < 16 )
+        {
+            x_DebugMsg( "[VR_BODY] actor skip: skin missing name=%s\n",
+                        GetSkinInst().GetSkinGeomName() ? GetSkinInst().GetSkinGeomName() : "(null)" );
+            ++s_VrActorTraceCount;
+        }
+#endif
         return;
+    }
 
 #ifndef X_RETAIL
     if( g_RenderBoneBBoxes )
@@ -930,13 +946,48 @@ void actor::OnRender( void )
     }
 
     if (LODMask == 0)
+    {
+#if defined( A51_ENABLE_OPENXR )
+        if( bTraceVrAvatar && s_VrActorTraceCount < 16 )
+        {
+            x_DebugMsg( "[VR_BODY] actor skip: LOD mask is zero skin=%s vmask=%08x\n",
+                        GetSkinInst().GetSkinGeomName(),
+                        GetSkinInst().GetVMeshMask().VMeshMask );
+            ++s_VrActorTraceCount;
+        }
+#endif
         return ;
+    }
 
     // compute bones
     s32 nActiveBones = 0;
     const matrix4* pMatrices = GetBonesForRender( LODMask, nActiveBones );
     if( !pMatrices )
+    {
+#if defined( A51_ENABLE_OPENXR )
+        if( bTraceVrAvatar && s_VrActorTraceCount < 16 )
+        {
+            x_DebugMsg( "[VR_BODY] actor skip: bone matrices missing skin=%s lod=%08llx activeBones=%d\n",
+                        GetSkinInst().GetSkinGeomName(),
+                        (unsigned long long)LODMask,
+                        nActiveBones );
+            ++s_VrActorTraceCount;
+        }
+#endif
         return;
+    }
+
+#if defined( A51_ENABLE_OPENXR )
+    if( bTraceVrAvatar && s_VrActorTraceCount < 16 )
+    {
+        x_DebugMsg( "[VR_BODY] actor draw: skin=%s lod=%08llx activeBones=%d alpha=%u\n",
+                    GetSkinInst().GetSkinGeomName(),
+                    (unsigned long long)LODMask,
+                    nActiveBones,
+                    GetSkinInst().GetAlpha() );
+        ++s_VrActorTraceCount;
+    }
+#endif
 
     // Setup render flags and get ambient color
     xcolor Ambient;

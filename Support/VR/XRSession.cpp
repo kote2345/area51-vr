@@ -270,6 +270,8 @@ struct VulkanSession::Impl
     XrAction RightStickAction = XR_NULL_HANDLE;
     XrAction LeftTriggerAction = XR_NULL_HANDLE;
     XrAction RightTriggerAction = XR_NULL_HANDLE;
+    XrAction LeftGripValueAction = XR_NULL_HANDLE;
+    XrAction RightGripValueAction = XR_NULL_HANDLE;
     XrAction LeftXAction = XR_NULL_HANDLE;
     XrAction LeftYAction = XR_NULL_HANDLE;
     XrAction RightAAction = XR_NULL_HANDLE;
@@ -752,6 +754,12 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
         InputSetupOk = MakeAction( XR_ACTION_TYPE_FLOAT_INPUT,
                                    "right_trigger", "Right Trigger",
                                    m_pImpl->RightTriggerAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_FLOAT_INPUT,
+                                   "left_grip_value", "Left Grip Value",
+                                   m_pImpl->LeftGripValueAction, FALSE ) && InputSetupOk;
+        InputSetupOk = MakeAction( XR_ACTION_TYPE_FLOAT_INPUT,
+                                   "right_grip_value", "Right Grip Value",
+                                   m_pImpl->RightGripValueAction, FALSE ) && InputSetupOk;
         InputSetupOk = MakeAction( XR_ACTION_TYPE_BOOLEAN_INPUT,
                                    "left_x", "Left X",
                                    m_pImpl->LeftXAction, FALSE ) && InputSetupOk;
@@ -824,6 +832,10 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
                         "/user/hand/left/input/trigger/value" ) &&
             AddBinding( m_pImpl->RightTriggerAction,
                         "/user/hand/right/input/trigger/value" ) &&
+            AddBinding( m_pImpl->LeftGripValueAction,
+                        "/user/hand/left/input/squeeze/value" ) &&
+            AddBinding( m_pImpl->RightGripValueAction,
+                        "/user/hand/right/input/squeeze/value" ) &&
             AddBinding( m_pImpl->LeftXAction,
                         "/user/hand/left/input/x/click" ) &&
             AddBinding( m_pImpl->LeftYAction,
@@ -1314,6 +1326,10 @@ void VulkanSession::Shutdown( void )
         xrDestroyAction( m_pImpl->LeftTriggerAction );
     if( m_pImpl->RightTriggerAction )
         xrDestroyAction( m_pImpl->RightTriggerAction );
+    if( m_pImpl->LeftGripValueAction )
+        xrDestroyAction( m_pImpl->LeftGripValueAction );
+    if( m_pImpl->RightGripValueAction )
+        xrDestroyAction( m_pImpl->RightGripValueAction );
     if( m_pImpl->LeftXAction )
         xrDestroyAction( m_pImpl->LeftXAction );
     if( m_pImpl->LeftYAction )
@@ -2111,6 +2127,43 @@ xbool VulkanSession::GetControllerPose( u32 Hand,
     }
     Pose.Valid = TRUE;
     return TRUE;
+}
+
+xbool VulkanSession::GetControllerFingerInput( u32 Hand, f32& Grip,
+                                               f32& Trigger ) const
+{
+    Grip = 0.0f;
+    Trigger = 0.0f;
+    if( !m_pImpl || !m_pImpl->InputActionsReady ||
+        !m_pImpl->SessionRunning || Hand > 1 )
+        return FALSE;
+
+    const XrAction GripAction = ( Hand == 0 )
+                              ? m_pImpl->LeftGripValueAction
+                              : m_pImpl->RightGripValueAction;
+    const XrAction TriggerAction = ( Hand == 0 )
+                                 ? m_pImpl->LeftTriggerAction
+                                 : m_pImpl->RightTriggerAction;
+    auto ReadValue = [&]( XrAction Action, f32& Value ) -> xbool
+    {
+        if( !Action )
+            return FALSE;
+        XrActionStateGetInfo GetInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
+        GetInfo.action = Action;
+        XrActionStateFloat State{ XR_TYPE_ACTION_STATE_FLOAT };
+        if( XR_FAILED( xrGetActionStateFloat( m_pImpl->Session,
+                                              &GetInfo, &State ) ) )
+            return FALSE;
+        if( State.isActive )
+            Value = ( State.currentState < 0.0f ) ? 0.0f
+                  : ( State.currentState > 1.0f ) ? 1.0f
+                  : State.currentState;
+        return TRUE;
+    };
+
+    const xbool GripValid = ReadValue( GripAction, Grip );
+    const xbool TriggerValid = ReadValue( TriggerAction, Trigger );
+    return GripValid || TriggerValid;
 }
 
 xbool VulkanSession::PrepareStereoFrame( const vulkan_frame_info& LeftFrame,

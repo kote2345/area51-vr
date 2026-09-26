@@ -1150,6 +1150,37 @@ void player::UpdateGhostLoco( f32 DeltaTime )
 
     m_pLoco->SetGhostIsMoving( m_Physics.GetVelocity().LengthSquared() > x_sqr( 0.01f ) );
     m_pLoco->SetPitch( m_Pitch );
-    m_pLoco->SetYaw( m_Yaw );
+    radian BodyYaw = m_Yaw;
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() )
+    {
+        for( u32 Hand = 0; Hand < 2; ++Hand )
+        {
+            f32 Grip = 0.0f;
+            f32 Trigger = 0.0f;
+            g_XRSession.GetControllerFingerInput( Hand, Grip, Trigger );
+            m_Loco.m_Player.SetVrFingerInput( Hand, Grip, Trigger );
+        }
+        a51::xr::eye_view XREye{};
+        if( g_XRSession.GetEyeView( 0, XREye ) )
+        {
+            quaternion HeadRotation( -XREye.Orientation[0],
+                                      XREye.Orientation[1],
+                                     -XREye.Orientation[2],
+                                      XREye.Orientation[3] );
+            HeadRotation.Normalize();
+
+            matrix4 HeadLocal;
+            HeadLocal.Identity();
+            HeadLocal.SetRotation( HeadRotation );
+            BodyYaw += HeadLocal.GetRotation().Yaw;
+        }
+    }
+#endif
+    /* The rendered headset view is body yaw plus this relative head yaw.
+     * Give the same world heading to the avatar locomotion so the soldier
+     * turns with the player when they look around in VR. */
+    m_pLoco->SetYaw( BodyYaw );
+    m_Loco.m_Player.SetVrBodyYaw( BodyYaw );
     OnAdvanceGhostLogic( DeltaTime );
 }

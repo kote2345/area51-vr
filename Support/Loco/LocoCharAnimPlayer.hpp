@@ -52,6 +52,11 @@ virtual void                SetAnimGroup            ( const anim_group::handle& 
 
         // Bone LOD control - tells the player how many bones to actually compute when mixing
         void                SetNActiveBones         ( s32 nBones ) ;
+        void                SetVrLegOnlyPose        ( xbool Enable ) ;
+        xbool               IsVrLegOnlyPose         ( void ) const { return m_bVrLegOnlyPose; }
+        void                SetVrBodyYaw            ( radian Yaw ) ;
+        void                SetVrFingerInput        ( s32 Hand, f32 Grip,
+                                                      f32 Trigger ) ;
 
         // Sets the new animation and blends out the old animation if BlendTime is non zero
         // NOTE: If the player is currently blending and bInterruptBlend is FALSE, then
@@ -214,6 +219,10 @@ private:
         // Animation vars
         anim_group::handle      m_hAnimGroup;           // Group of anims we are using 
         s32                     m_nActiveBones ;        // Number of bones to compute (used for LODs)
+        xbool                   m_bVrLegOnlyPose;       // VR: keep locomotion animation on the legs only
+        radian                  m_VrBodyYaw;            // VR: world yaw used by the body root
+        f32                     m_VrGrip[2];            // VR: analog squeeze per hand
+        f32                     m_VrTrigger[2];         // VR: analog trigger per hand
         vector3                 m_WorldPos;             // World position
 
         // Track controller vars

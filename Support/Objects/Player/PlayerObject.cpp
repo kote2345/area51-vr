@@ -550,30 +550,29 @@ void player::OnInit( void )
         {
             m_SkinInst.SetUpSkinGeom( "NPC_MIL_HAZMAT_01_LEVELBLUE_SL0-1.SKINGEOM" );
             m_SkinInst.SetVMeshMask( 0 );
-            m_SkinInst.SetVMeshBit( "MESH_BODY_HazMat_L0", TRUE );
-            m_SkinInst.SetVMeshBit( "MESH_BODY_HazMat_L1", TRUE );
-            m_SkinInst.SetVMeshBit( "MESH_BODY_HazMat_L2", TRUE );
-            m_SkinInst.SetVMeshBit( "MESH_GEAR_HazMat_B_L0", TRUE );
-            m_SkinInst.SetVMeshBit( "MESH_HEAD_Helmet_L0", TRUE );
-            m_SkinInst.SetVMeshBit( "MESH_HEAD_Helmet_L1", TRUE );
-            m_SkinInst.SetVMeshBit( "MESH_HEAD_Helmet_L2", TRUE );
-            m_SkinInst.SetVMeshBit( "MESH_FACEINHELMET_Crispy_L0", TRUE );
-            m_SkinInst.SetVMeshBit( "MESH_FACEINHELMET_Crispy_L1", TRUE );
-            m_SkinInst.SetVMeshBit( "MESH_FACEINHELMET_Crispy_L2", TRUE );
+            /* VMesh names select a group of LODs. The MESH_*_L* names are
+             * regular mesh names inside those groups, so they cannot be
+             * used with SetVMeshBit(). */
+            m_SkinInst.SetVMeshBit( "BODY", TRUE );
+            m_SkinInst.SetVMeshBit( "GEAR_CRISPY", TRUE );
+            m_SkinInst.SetVMeshBit( "GEAR_HEAD_Crispy", TRUE );
+            m_SkinInst.SetVMeshBit( "HEAD_HELMET", TRUE );
+            m_SkinInst.SetVMeshBit( "FACE_IN_HELMET_Crispy", TRUE );
             m_SkinInst.SetVirtualTexture( 0 );
 
             geom* pVrAvatarGeom = m_SkinInst.GetGeom();
             if( pVrAvatarGeom )
             {
                 LOG_MESSAGE( "player::OnInit",
-                             "First-level VR soldier loaded: meshes=%d bones=%d mask=%08x body=%d gear=%d head=%d face=%d",
+                             "First-level VR soldier loaded: meshes=%d bones=%d mask=%08x body=%d gear=%d headGear=%d head=%d face=%d",
                              pVrAvatarGeom->m_nVirtualMeshes,
                              m_SkinInst.GetSkinGeom()->m_nBones,
                              m_SkinInst.GetVMeshMask().VMeshMask,
-                             pVrAvatarGeom->GetVMeshIndex( "MESH_BODY_HazMat_L0" ),
-                             pVrAvatarGeom->GetVMeshIndex( "MESH_GEAR_HazMat_B_L0" ),
-                             pVrAvatarGeom->GetVMeshIndex( "MESH_HEAD_Helmet_L0" ),
-                             pVrAvatarGeom->GetVMeshIndex( "MESH_FACEINHELMET_Crispy_L0" ) );
+                             pVrAvatarGeom->GetVMeshIndex( "BODY" ),
+                             pVrAvatarGeom->GetVMeshIndex( "GEAR_CRISPY" ),
+                             pVrAvatarGeom->GetVMeshIndex( "GEAR_HEAD_Crispy" ),
+                             pVrAvatarGeom->GetVMeshIndex( "HEAD_HELMET" ),
+                             pVrAvatarGeom->GetVMeshIndex( "FACE_IN_HELMET_Crispy" ) );
             }
 
             m_hAnimGroup.SetName( "NPC_MILITARY_SMP.ANIM" );
@@ -582,6 +581,7 @@ void player::OnInit( void )
             {
                 m_pLoco->OnInit( m_SkinInst.GetGeom(), m_hAnimGroup.GetName(), GetGuid() );
                 InitLoco();
+                m_Loco.m_Player.SetVrLegOnlyPose( TRUE );
             }
             else
             {
