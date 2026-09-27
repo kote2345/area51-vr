@@ -83,6 +83,11 @@ void PlatformDestroyInstance( void* pInstance )
         xrDestroyInstance( reinterpret_cast<XrInstance>( pInstance ) );
 }
 
+xbool PlatformHasFullBodyTrackingExtension( void )
+{
+    return FALSE;
+}
+
 xbool PlatformGetSystemInfo( void*       pInstance,
                               system_info& Info,
                               char*        pError,

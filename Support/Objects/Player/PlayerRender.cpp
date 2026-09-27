@@ -19,6 +19,7 @@
 #include "UI/ui_renderer.hpp"
 #include "StringMgr/StringMgr.hpp"
 #include "e_Audio.hpp"
+#include "CollisionMgr/CollisionMgr.hpp"
 
 #if defined( A51_ENABLE_OPENXR )
 #include "VR/XRSession.hpp"
@@ -112,18 +113,8 @@ static void ApplyBoneDeltaToSubtree( const anim_group& Group,
     }
 }
 
-static xbool GetVRHandTarget( const player& Player,
-                              u32 Hand,
-                              vector3& Target,
-                              matrix4& TargetRotation )
+static matrix4 GetVRTrackingToWorld( const player& Player )
 {
-    a51::xr::controller_pose Pose{};
-    if( !g_XRSession.GetControllerPose( Hand, Pose ) || !Pose.Valid )
-        return FALSE;
-
-    /* Controller locations are head-relative. Transform them with the same
-     * HMD orientation and eye position as the rendered camera so turning the
-     * head does not drag the avatar arms away from the controller poses. */
     matrix4 TrackingToWorld = Player.GetL2W();
     TrackingToWorld.SetTranslation( Player.GetRenderView().GetPosition() );
     a51::xr::eye_view XREye{};
@@ -139,6 +130,165 @@ static xbool GetVRHandTarget( const player& Player,
         HeadLocal.SetRotation( HeadRotation );
         TrackingToWorld = TrackingToWorld * HeadLocal;
     }
+    return TrackingToWorld;
+}
+
+static xbool GetVRBodyJointTarget( const matrix4& TrackingToWorld,
+                                   const a51::xr::body_tracking_pose& Pose,
+                                   u32 Joint,
+                                   vector3& Target )
+{
+    if( !Pose.Valid || Joint >= a51::xr::BODY_JOINT_FULL_BODY_COUNT ||
+        !Pose.Joints[Joint].PositionValid )
+    {
+        return FALSE;
+    }
+
+    const vector3 TrackingOffset(
+        -Pose.Joints[Joint].Position[0] * 100.0f,
+         Pose.Joints[Joint].Position[1] * 100.0f,
+        -Pose.Joints[Joint].Position[2] * 100.0f );
+    Target = TrackingToWorld * TrackingOffset;
+    return TRUE;
+}
+
+static xbool GetVRBodyJointRotation( const matrix4& TrackingToWorld,
+                                     const a51::xr::body_tracking_pose& Pose,
+                                     u32 Joint,
+                                     matrix4& Rotation )
+{
+    if( !Pose.Valid || Joint >= a51::xr::BODY_JOINT_UPPER_BODY_COUNT ||
+        !Pose.Joints[Joint].OrientationValid )
+    {
+        return FALSE;
+    }
+
+    const a51::xr::body_joint_pose& BodyJoint = Pose.Joints[Joint];
+    quaternion JointRotation( -BodyJoint.Orientation[0],
+                                BodyJoint.Orientation[1],
+                               -BodyJoint.Orientation[2],
+                                BodyJoint.Orientation[3] );
+    JointRotation.Normalize();
+
+    matrix4 JointLocal;
+    JointLocal.Identity();
+    JointLocal.SetRotation( JointRotation );
+    Rotation = TrackingToWorld;
+    Rotation.ClearTranslation();
+    Rotation.ClearScale();
+    Rotation = Rotation * JointLocal;
+    Rotation.ClearTranslation();
+    Rotation.ClearScale();
+    return TRUE;
+}
+
+static vector3 GetSolvedBoneJoint( const loco_char_anim_player& AnimPlayer,
+                                   const matrix4* pMatrices,
+                                   s32 Bone )
+{
+    return pMatrices[Bone] * AnimPlayer.GetBoneBindPosition( Bone );
+}
+
+static void ApplyTrackedTorsoSegment( const anim_group& Group,
+                                      const loco_char_anim_player& AnimPlayer,
+                                      matrix4* pMatrices,
+                                      s32 nMatrices,
+                                      s32 ParentBone,
+                                      s32 ChildBone,
+                                      s32 AffectedBone,
+                                      const vector3& TargetStart,
+                                      const vector3& TargetEnd )
+{
+    if( ParentBone < 0 || ChildBone < 0 ||
+        AffectedBone < 0 || ParentBone >= nMatrices ||
+        ChildBone >= nMatrices || AffectedBone >= nMatrices )
+    {
+        return;
+    }
+
+    const vector3 CurrentStart = GetSolvedBoneJoint(
+        AnimPlayer, pMatrices, ParentBone );
+    const vector3 CurrentEnd = GetSolvedBoneJoint(
+        AnimPlayer, pMatrices, ChildBone );
+    matrix4 Delta;
+    if( !BuildBoneDelta( CurrentEnd - CurrentStart,
+                         TargetEnd - TargetStart, CurrentStart, Delta ) )
+    {
+        return;
+    }
+
+    Delta.SetTranslation( TargetStart - Delta.RotateVector( CurrentStart ) );
+    ApplyBoneDeltaToSubtree( Group, pMatrices, nMatrices,
+                             AffectedBone, Delta );
+}
+
+static xbool ApplyTrackedLeg( const anim_group& Group,
+                              const loco_char_anim_player& AnimPlayer,
+                              matrix4* pMatrices,
+                              s32 nMatrices,
+                              s32 ThighBone,
+                              s32 CalfBone,
+                              s32 FootBone,
+                              const vector3& TargetThigh,
+                              const vector3& TargetKnee,
+                              const vector3& TargetAnkle )
+{
+    if( ThighBone < 0 || CalfBone < 0 || FootBone < 0 ||
+        ThighBone >= nMatrices || CalfBone >= nMatrices ||
+        FootBone >= nMatrices )
+    {
+        return FALSE;
+    }
+
+    vector3 CurrentHip = GetSolvedBoneJoint( AnimPlayer, pMatrices,
+                                              ThighBone );
+    matrix4 HipTranslation;
+    HipTranslation.Identity();
+    HipTranslation.SetTranslation( TargetThigh - CurrentHip );
+    ApplyBoneDeltaToSubtree( Group, pMatrices, nMatrices,
+                             ThighBone, HipTranslation );
+
+    CurrentHip = GetSolvedBoneJoint( AnimPlayer, pMatrices, ThighBone );
+    vector3 CurrentKnee = GetSolvedBoneJoint( AnimPlayer, pMatrices,
+                                               CalfBone );
+    matrix4 ThighDelta;
+    if( !BuildBoneDelta( CurrentKnee - CurrentHip,
+                         TargetKnee - TargetThigh,
+                         CurrentHip, ThighDelta ) )
+    {
+        return FALSE;
+    }
+    ApplyBoneDeltaToSubtree( Group, pMatrices, nMatrices,
+                             ThighBone, ThighDelta );
+
+    CurrentKnee = GetSolvedBoneJoint( AnimPlayer, pMatrices, CalfBone );
+    const vector3 CurrentAnkle = GetSolvedBoneJoint(
+        AnimPlayer, pMatrices, FootBone );
+    matrix4 CalfDelta;
+    if( !BuildBoneDelta( CurrentAnkle - CurrentKnee,
+                         TargetAnkle - TargetKnee,
+                         CurrentKnee, CalfDelta ) )
+    {
+        return FALSE;
+    }
+    ApplyBoneDeltaToSubtree( Group, pMatrices, nMatrices,
+                             CalfBone, CalfDelta );
+    return TRUE;
+}
+
+static xbool GetVRHandTarget( const player& Player,
+                              u32 Hand,
+                              vector3& Target,
+                              matrix4& TargetRotation )
+{
+    a51::xr::controller_pose Pose{};
+    if( !g_XRSession.GetControllerPose( Hand, Pose ) || !Pose.Valid )
+        return FALSE;
+
+    /* Controller locations are head-relative. Transform them with the same
+     * HMD orientation and eye position as the rendered camera so turning the
+     * head does not drag the avatar arms away from the controller poses. */
+    const matrix4 TrackingToWorld = GetVRTrackingToWorld( Player );
     const vector3 TrackingOffset( -Pose.Position[0] * 100.0f,
                                    Pose.Position[1] * 100.0f,
                                   -Pose.Position[2] * 100.0f );
@@ -161,13 +311,341 @@ static xbool GetVRHandTarget( const player& Player,
     return TRUE;
 }
 
+static void AddVrHudImage( const texture& Texture,
+                           const vector3& PanelOrigin,
+                           const vector3& Right,
+                           const vector3& Up,
+                           f32 WorldPerPixel,
+                           f32 X,
+                           f32 Y,
+                           f32 Width,
+                           f32 Height,
+                           const vector2& UV0,
+                           const vector2& UV1,
+                           const xcolor& Color )
+{
+    const vector3 TopLeft = PanelOrigin + Right * ( X * WorldPerPixel ) -
+                            Up * ( Y * WorldPerPixel );
+    const vector3 TopRight = TopLeft + Right * ( Width * WorldPerPixel );
+    const vector3 BottomLeft = TopLeft - Up * ( Height * WorldPerPixel );
+    const vector3 BottomRight = TopRight - Up * ( Height * WorldPerPixel );
+    const render::primitive_draw_desc Desc(
+        &Texture, render::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        render::PRIMITIVE_BLEND_ALPHA, render::PRIMITIVE_DEPTH_DISABLED,
+        render::PRIMITIVE_RASTER_SOLID_NO_CULL,
+        render::PRIMITIVE_SAMPLER_LINEAR_CLAMP,
+        render::PRIMITIVE_LAYER_TRANSPARENT );
+    render::PrimitiveBatch Batch( Desc );
+    Batch.Reserve( 4, 6 );
+    const render::primitive_vertex TL( TopLeft, vector2( UV0.X, UV0.Y ), Color );
+    const render::primitive_vertex TR( TopRight, vector2( UV1.X, UV0.Y ), Color );
+    const render::primitive_vertex BR( BottomRight, vector2( UV1.X, UV1.Y ), Color );
+    const render::primitive_vertex BL( BottomLeft, vector2( UV0.X, UV1.Y ), Color );
+    Batch.AddTriangle( TL, TR, BR );
+    Batch.AddTriangle( TL, BR, BL );
+    matrix4 Identity;
+    Identity.Identity();
+    Batch.Submit( Identity );
+}
+
+static void AddVrHudText( ui_font& Font,
+                          const char* pText,
+                          const vector3& PanelOrigin,
+                          const vector3& Right,
+                          const vector3& Up,
+                          f32 WorldPerPixel,
+                          f32 X,
+                          f32 Y,
+                          f32 RightAlignedWidth,
+                          const xcolor& HudColor )
+{
+    texture* pFontTexture = Font.GetBitmapTexture();
+    const s32 BitmapWidth = Font.GetBitmapWidth();
+    const s32 BitmapHeight = Font.GetBitmapHeight();
+    if( !pFontTexture || BitmapWidth <= 0 || BitmapHeight <= 0 || !pText )
+        return;
+
+    const xwstring Text( pText );
+    f32 CursorX = X + RightAlignedWidth - Font.TextWidth( Text );
+    xcolor TopColor( HudColor );
+    xcolor BottomColor( HudColor );
+    TopColor.A = BottomColor.A = 204;
+    if( ( HudColor.R + HudColor.G + HudColor.B ) / 3 > 59 )
+    {
+        TopColor.R = TopColor.G = TopColor.B = 255;
+    }
+    else
+    {
+        BottomColor.R = BottomColor.G = BottomColor.B = 0;
+    }
+
+    const render::primitive_draw_desc Desc(
+        pFontTexture, render::PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+        render::PRIMITIVE_BLEND_ALPHA, render::PRIMITIVE_DEPTH_DISABLED,
+        render::PRIMITIVE_RASTER_SOLID_NO_CULL,
+        /* ui_font::RenderGlyphQuad uses point sampling for this packed atlas.
+         * Linear filtering blends the tiny glyph masks with neighboring
+         * transparent atlas cells at the weapon HUD's reduced world scale. */
+        render::PRIMITIVE_SAMPLER_POINT_CLAMP,
+        render::PRIMITIVE_LAYER_TRANSPARENT );
+    render::PrimitiveBatch Batch( Desc );
+    Batch.Reserve( Text.GetLength() * 4, Text.GetLength() * 6 );
+
+    for( s32 i = 0; i < Text.GetLength(); ++i )
+    {
+        // GetCharacter performs the character-to-atlas lookup itself. Passing
+        // LookUpCharacter's atlas index here looked that index up a second
+        // time as though it were a character code, sampling unrelated atlas
+        // cells instead of the digits.
+        const ui_font::Character& Character = Font.GetCharacter( Text[i] );
+        const f32 GlyphWidth = (f32)Character.W;
+        const f32 GlyphHeight = (f32)Font.GetLineHeight();
+        // Match ui_font::RenderText's atlas coordinates exactly. Insetting the
+        // UVs here clips the narrow glyphs used by the ammo counter.
+        const vector2 UV0( (f32)Character.X / BitmapWidth,
+                           (f32)Character.Y / BitmapHeight );
+        const vector2 UV1( (f32)( Character.X + Character.W ) / BitmapWidth,
+                           (f32)( Character.Y + Font.GetLineHeight() ) / BitmapHeight );
+
+        const vector3 TopLeft = PanelOrigin +
+            Right * ( CursorX * WorldPerPixel ) - Up * ( Y * WorldPerPixel );
+        const vector3 TopRight = TopLeft + Right * ( GlyphWidth * WorldPerPixel );
+        const vector3 BottomLeft = TopLeft - Up * ( GlyphHeight * WorldPerPixel );
+        const vector3 BottomRight = TopRight - Up * ( GlyphHeight * WorldPerPixel );
+        const render::primitive_vertex TL( TopLeft, UV0, TopColor );
+        const render::primitive_vertex TR( TopRight, vector2( UV1.X, UV0.Y ), TopColor );
+        const render::primitive_vertex BR( BottomRight, UV1, BottomColor );
+        const render::primitive_vertex BL( BottomLeft, vector2( UV0.X, UV1.Y ), BottomColor );
+        Batch.AddTriangle( TL, TR, BR );
+        Batch.AddTriangle( TL, BR, BL );
+        CursorX += GlyphWidth + 1.0f;
+    }
+
+    matrix4 Identity;
+    Identity.Identity();
+    Batch.Submit( Identity );
+}
+
+static void DrawVrAmmoHud( player& Player,
+                           hud_ammo& AmmoHud,
+                           new_weapon& Weapon,
+                           const matrix4& WeaponTransform,
+                           const vector3& BarrelDirection )
+{
+    texture* pFrameTexture = AmmoHud.m_AmmoBoxBMP.GetPointer();
+    texture* pClipTexture = AmmoHud.m_AmmoBoxBMP_Clip.GetPointer();
+    texture* pReserveTexture = AmmoHud.m_AmmoBoxBMP_Resv.GetPointer();
+    texture* pGrenadesTexture = AmmoHud.m_AmmoBoxBMP_Nads.GetPointer();
+    ui_font* pHudNumberFont = g_UiMgr ? g_UiMgr->GetFont( "hudnum" ) : NULL;
+    ui_font* pSmallFont = g_UiMgr ? g_UiMgr->GetFont( "small" ) : NULL;
+    if( !pFrameTexture || !pClipTexture || !pReserveTexture ||
+        !pGrenadesTexture || !pHudNumberFont || !pSmallFont )
+        return;
+
+    s32 AmmoAmount = 0;
+    s32 AmmoMax = 0;
+    s32 AmmoPerClip = 0;
+    s32 AmmoInClip = 0;
+    Weapon.GetAmmoState( new_weapon::AMMO_PRIMARY, AmmoAmount, AmmoMax,
+                         AmmoPerClip, AmmoInClip );
+    if( AmmoPerClip <= 0 )
+        return;
+
+    const xbitmap& FrameBitmap = pFrameTexture->m_bitmap;
+    const f32 FrameWidth = (f32)FrameBitmap.GetWidth();
+    const f32 FrameHeight = (f32)FrameBitmap.GetHeight();
+    if( FrameWidth <= 0.0f || FrameHeight <= 0.0f )
+        return;
+
+    vector3 Right( BarrelDirection );
+    if( !Right.SafeNormalize() )
+        Right = WeaponTransform.RotateVector( vector3( 1.0f, 0.0f, 0.0f ) );
+    if( !Right.SafeNormalize() )
+        return;
+
+    // Use the weapon's own axes so the ammo panel keeps the same pitch, yaw,
+    // and roll as the held model instead of turning toward the player's head.
+    vector3 Up = WeaponTransform.RotateVector( vector3( 0.0f, 1.0f, 0.0f ) );
+    Up -= Right * v3_Dot( Up, Right );
+    if( !Up.SafeNormalize() )
+    {
+        Up = WeaponTransform.RotateVector( vector3( 1.0f, 0.0f, 0.0f ) );
+        Up -= Right * v3_Dot( Up, Right );
+        if( !Up.SafeNormalize() )
+            return;
+    }
+    vector3 PanelNormal = v3_Cross( Right, Up );
+    if( !PanelNormal.SafeNormalize() )
+        return;
+
+    vector3 TowardPlayer = Player.GetRenderView().GetPosition() -
+                           WeaponTransform.GetTranslation();
+    const f32 NormalSide = v3_Dot( PanelNormal, TowardPlayer ) >= 0.0f
+                         ? 1.0f : -1.0f;
+
+    const f32 PanelWidth = 24.0f;
+    const f32 WorldPerPixel = PanelWidth / FrameWidth;
+    const f32 PanelHeight = FrameHeight * WorldPerPixel;
+    const vector3 PanelCenter = WeaponTransform.GetTranslation() +
+                                BarrelDirection * 9.0f + Up * 4.0f +
+                                PanelNormal * ( NormalSide * 3.0f );
+    const vector3 PanelOrigin = PanelCenter - Right * ( PanelWidth * 0.5f ) +
+                                Up * ( PanelHeight * 0.5f );
+    const vector2 UV0( 0.0f, 0.0f );
+    const vector2 UV1( 1.0f, 1.0f );
+    const xcolor InsideColor( 0, 31, 0, 204 );
+
+    AddVrHudImage( *pClipTexture, PanelOrigin, Right, Up, WorldPerPixel,
+                   0.0f, 0.0f, FrameWidth, FrameHeight, UV0, UV1,
+                   InsideColor );
+    if( AmmoHud.m_WarningClipALPHA > 0 )
+    {
+        xcolor Warning( 200, 50, 0, (u8)AmmoHud.m_WarningClipALPHA );
+        if( AmmoHud.m_CriticalClip )
+            Warning.A = (u8)MIN( hud_object::m_PulseAlpha, 100.0f );
+        AddVrHudImage( *pClipTexture, PanelOrigin, Right, Up, WorldPerPixel,
+                       0.0f, 0.0f, FrameWidth, FrameHeight, UV0, UV1, Warning );
+    }
+
+    AddVrHudImage( *pReserveTexture, PanelOrigin, Right, Up, WorldPerPixel,
+                   0.0f, 0.0f, FrameWidth, FrameHeight, UV0, UV1,
+                   InsideColor );
+    if( AmmoHud.m_WarningResvALPHA > 0 )
+    {
+        xcolor Warning( 200, 50, 0, (u8)AmmoHud.m_WarningResvALPHA );
+        if( AmmoHud.m_CriticalResv )
+            Warning.A = (u8)MIN( hud_object::m_PulseAlpha, 100.0f );
+        AddVrHudImage( *pReserveTexture, PanelOrigin, Right, Up, WorldPerPixel,
+                       0.0f, 0.0f, FrameWidth, FrameHeight, UV0, UV1, Warning );
+    }
+
+    AddVrHudImage( *pGrenadesTexture, PanelOrigin, Right, Up, WorldPerPixel,
+                   0.0f, 0.0f, FrameWidth, FrameHeight, UV0, UV1,
+                   InsideColor );
+    if( AmmoHud.m_WarningNads )
+        AddVrHudImage( *pGrenadesTexture, PanelOrigin, Right, Up, WorldPerPixel,
+                       0.0f, 0.0f, FrameWidth, FrameHeight, UV0, UV1,
+                       xcolor( 180, 50, 0, 100 ) );
+
+    AddVrHudImage( *pFrameTexture, PanelOrigin, Right, Up, WorldPerPixel,
+                   0.0f, 0.0f, FrameWidth, FrameHeight, UV0, UV1, g_HudColor );
+
+    const s32 ClipX = 53;
+    const s32 ClipY = 19;
+    const s32 ReserveX = 134 - 32;
+    const s32 ReserveY = 43 - 19;
+    const char* pClipText = xfs( "%d", AmmoInClip );
+    const char* pReserveText = xfs( "%d", MAX( 0, AmmoAmount - AmmoInClip ) );
+    const vector3 TextOrigin = PanelOrigin +
+                               PanelNormal * ( NormalSide * 0.2f );
+    AddVrHudText( *pHudNumberFont, pClipText, TextOrigin, Right, Up,
+                  WorldPerPixel, (f32)ClipX, (f32)ClipY, 20.0f, g_HudColor );
+    AddVrHudText( *pSmallFont, pReserveText, TextOrigin, Right, Up,
+                  WorldPerPixel, (f32)ReserveX, (f32)ReserveY, 20.0f,
+                  g_HudColor );
+
+    texture* pGrenadeIcon = NULL;
+    const inven_item GrenadeItem = Player.GetCurrentGrenadeType2();
+    switch( GrenadeItem )
+    {
+    case INVEN_GRENADE_FRAG:          pGrenadeIcon = AmmoHud.m_FragAmmoIcon.GetPointer(); break;
+    case INVEN_GRENADE_JBEAN:         pGrenadeIcon = AmmoHud.m_JBeanAmmoIcon.GetPointer(); break;
+    case INVEN_GRENADE_JBEAN_ENHANCE: pGrenadeIcon = AmmoHud.m_JBeanXAmmoIcon.GetPointer(); break;
+    default: break;
+    }
+    if( pGrenadeIcon )
+    {
+        const f32 IconWidth = (f32)pGrenadeIcon->m_bitmap.GetWidth();
+        const f32 IconHeight = (f32)pGrenadeIcon->m_bitmap.GetHeight();
+        AddVrHudImage( *pGrenadeIcon, PanelOrigin, Right, Up, WorldPerPixel,
+                       94.0f, 4.0f, IconWidth, IconHeight, UV0, UV1,
+                       XCOLOR_WHITE );
+        const char* pGrenadeCount = xfs( "%d", (s32)Player.GetInventory2().GetAmount( GrenadeItem ) );
+        AddVrHudText( *pSmallFont, pGrenadeCount, TextOrigin, Right, Up,
+                      WorldPerPixel, 94.0f, 0.0f, 20.0f, XCOLOR_WHITE );
+    }
+}
+
 } // anonymous namespace
 #endif
 
-xbool player::GetVrHandTransform( u32 Hand, matrix4& Transform ) const
+xbool player::GetVrHandTransform( u32 Hand, matrix4& Transform )
 {
 #if defined( A51_ENABLE_OPENXR )
-    if( !IsVrAvatarMode() )
+    if( !IsVrAvatarMode() || Hand >= 2 )
+        return FALSE;
+
+    matrix4 TrackedTransform;
+    if( !GetVrTrackedHandTransform( Hand, TrackedTransform ) )
+    {
+        m_VrCollisionHandTransformValid[Hand] = FALSE;
+        return FALSE;
+    }
+
+    vector3 Position = TrackedTransform.GetTranslation();
+    if( m_VrCollisionHandTransformValid[Hand] )
+    {
+        vector3 SweepStart =
+            m_VrCollisionHandTransform[Hand].GetTranslation();
+        vector3 Remaining = Position - SweepStart;
+        const f32 HandRadius = 10.0f;
+
+        /* Resolve the current render-frame controller pose, rather than
+         * reusing the older pose sampled during simulation. This keeps the
+         * rendered hands in step with tracking while retaining wall contact. */
+        for( s32 Iteration = 0; Iteration < 2; ++Iteration )
+        {
+            if( Remaining.LengthSquared() <= 0.0001f )
+                break;
+
+            const vector3 SweepEnd = SweepStart + Remaining;
+            g_CollisionMgr.UseLowPoly();
+            g_CollisionMgr.SphereSetup( GetGuid(), SweepStart,
+                                        SweepEnd, HandRadius );
+            g_CollisionMgr.CheckCollisions(
+                object::TYPE_ALL_TYPES,
+                object::ATTR_BLOCKS_CHARACTER,
+                object::ATTR_COLLISION_PERMEABLE );
+            if( g_CollisionMgr.m_nCollisions == 0 )
+            {
+                SweepStart = SweepEnd;
+                break;
+            }
+
+            const collision_mgr::collision& Collision =
+                g_CollisionMgr.m_Collisions[0];
+            const f32 SafeT = x_clamp( Collision.T - 0.01f,
+                                       0.0f, 1.0f );
+            SweepStart += Remaining * SafeT;
+            Remaining = Position - SweepStart;
+
+            const f32 IntoSurface =
+                v3_Dot( Remaining, Collision.Plane.Normal );
+            if( IntoSurface < 0.0f )
+                Remaining -= Collision.Plane.Normal * IntoSurface;
+            else
+                break;
+        }
+
+        Position = SweepStart;
+    }
+
+    TrackedTransform.SetTranslation( Position );
+    Transform = TrackedTransform;
+    m_VrCollisionHandTransform[Hand] = Transform;
+    m_VrCollisionHandTransformValid[Hand] = TRUE;
+    return TRUE;
+#else
+    (void)Hand;
+    (void)Transform;
+    return FALSE;
+#endif
+}
+
+xbool player::GetVrTrackedHandTransform( u32 Hand, matrix4& Transform ) const
+{
+#if defined( A51_ENABLE_OPENXR )
+    if( !IsVrAvatarMode() || Hand >= 2 )
         return FALSE;
 
     vector3 Position;
@@ -248,6 +726,162 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
     }
 
     xbool bApplied = ( CrouchOffset > 0.0f );
+    a51::xr::body_tracking_pose BodyPose{};
+    const xbool bBodyTrackingActive =
+        g_XRSession.GetBodyTrackingPose( BodyPose ) &&
+        BodyPose.HighFidelity && ( BodyPose.Confidence >= 0.25f );
+    vector3 BodyTargets[a51::xr::BODY_JOINT_FULL_BODY_COUNT];
+    xbool BodyTargetValid[a51::xr::BODY_JOINT_FULL_BODY_COUNT] = {};
+    if( bBodyTrackingActive )
+    {
+        const matrix4 TrackingToWorld = GetVRTrackingToWorld( *this );
+        for( u32 Joint = 0;
+             Joint < a51::xr::BODY_JOINT_FULL_BODY_COUNT; ++Joint )
+        {
+            BodyTargetValid[Joint] = GetVRBodyJointTarget(
+                TrackingToWorld, BodyPose, Joint, BodyTargets[Joint] );
+        }
+
+        const s32 RootBone = m_Loco.m_Player.GetBoneIndex( "B_01_Root" );
+        const s32 SpineLowerBone =
+            m_Loco.m_Player.GetBoneIndex( "B_01_Spine01" );
+        const s32 SpineUpperBone =
+            m_Loco.m_Player.GetBoneIndex( "B_01_Spine02" );
+        const s32 NeckBone = m_Loco.m_Player.GetBoneIndex( "B_01_Neck" );
+        if( ( RootBone >= 0 ) && ( RootBone < nActiveBones ) &&
+            ( SpineLowerBone >= 0 ) &&
+            BodyTargetValid[a51::xr::BODY_JOINT_HIPS] )
+        {
+            /* Match the tracked pelvis to the avatar hip. Body joint targets
+             * then describe the torso independently of HMD orientation. */
+            const vector3 AvatarHips = GetSolvedBoneJoint(
+                m_Loco.m_Player, pSolved, RootBone );
+            const vector3 BodyOffset = AvatarHips -
+                BodyTargets[a51::xr::BODY_JOINT_HIPS];
+            for( u32 Joint = 0;
+                 Joint < a51::xr::BODY_JOINT_FULL_BODY_COUNT; ++Joint )
+            {
+                if( BodyTargetValid[Joint] )
+                    BodyTargets[Joint] += BodyOffset;
+            }
+
+            /* The root bone also weights the abdomen mesh. Drive its
+             * orientation from the tracked pelvis while preserving the hip
+             * pivot; this changes only root-weighted vertices, so the leg
+             * animation matrices remain untouched. */
+            matrix4 TrackedHipsRotation;
+            if( GetVRBodyJointRotation( TrackingToWorld, BodyPose,
+                    a51::xr::BODY_JOINT_HIPS, TrackedHipsRotation ) )
+            {
+                matrix4 RootTransform = pSolved[RootBone];
+                RootTransform.SetRotation( TrackedHipsRotation.GetRotation() );
+                RootTransform.SetTranslation(
+                    AvatarHips - RootTransform.RotateVector(
+                        m_Loco.m_Player.GetBoneBindPosition( RootBone ) ) );
+                pSolved[RootBone] = RootTransform;
+            }
+
+            if( BodyTargetValid[a51::xr::BODY_JOINT_LEFT_SHOULDER] &&
+                BodyTargetValid[a51::xr::BODY_JOINT_RIGHT_SHOULDER] &&
+                ( UpperBones[0] >= 0 ) && ( UpperBones[1] >= 0 ) &&
+                ( UpperBones[0] < nActiveBones ) &&
+                ( UpperBones[1] < nActiveBones ) )
+            {
+                const vector3 CurrentLeft = GetSolvedBoneJoint(
+                    m_Loco.m_Player, pSolved, UpperBones[0] );
+                const vector3 CurrentRight = GetSolvedBoneJoint(
+                    m_Loco.m_Player, pSolved, UpperBones[1] );
+                matrix4 ShoulderLineDelta;
+                if( BuildBoneDelta(
+                        CurrentRight - CurrentLeft,
+                        BodyTargets[a51::xr::BODY_JOINT_RIGHT_SHOULDER] -
+                        BodyTargets[a51::xr::BODY_JOINT_LEFT_SHOULDER],
+                        AvatarHips, ShoulderLineDelta ) )
+                {
+                    ApplyBoneDeltaToSubtree( *pGroup, pSolved,
+                        nActiveBones, SpineLowerBone, ShoulderLineDelta );
+                }
+            }
+
+            const u32 TrackedChest = a51::xr::BODY_JOINT_CHEST;
+            const u32 TrackedNeck = a51::xr::BODY_JOINT_NECK;
+            if( BodyTargetValid[TrackedChest] &&
+                BodyTargetValid[TrackedNeck] &&
+                ( SpineUpperBone >= 0 ) && ( NeckBone >= 0 ) )
+            {
+                /* Solve the trunk as one continuous segment. Solving each
+                 * estimated spine joint independently amplified tracker
+                 * noise into a visibly over-bent abdomen and chest. */
+                ApplyTrackedTorsoSegment( *pGroup, m_Loco.m_Player,
+                    pSolved, nActiveBones, RootBone, SpineUpperBone,
+                    SpineLowerBone,
+                    BodyTargets[a51::xr::BODY_JOINT_HIPS],
+                    BodyTargets[TrackedChest] );
+                ApplyTrackedTorsoSegment( *pGroup, m_Loco.m_Player,
+                    pSolved, nActiveBones, SpineUpperBone, NeckBone,
+                    NeckBone,
+                    BodyTargets[TrackedChest], BodyTargets[TrackedNeck] );
+                bApplied = TRUE;
+            }
+
+            const xbool UseTrackedLegPose = BodyPose.FullBody &&
+                !m_bVrButtonCrouching &&
+                !m_Loco.IsVrStickAnimationMoving();
+            if( UseTrackedLegPose )
+            {
+                /* Stick locomotion and button crouch keep the authored game
+                 * leg animation. Otherwise use the runtime's full-body leg
+                 * estimate, including a physical crouch. */
+                const s32 ThighBones[2] =
+                {
+                    m_Loco.m_Player.GetBoneIndex( "B_01_Leg_L_Thigh" ),
+                    m_Loco.m_Player.GetBoneIndex( "B_01_Leg_R_Thigh" )
+                };
+                const s32 CalfBones[2] =
+                {
+                    m_Loco.m_Player.GetBoneIndex( "B_01_Leg_L_Calf" ),
+                    m_Loco.m_Player.GetBoneIndex( "B_01_Leg_R_Calf" )
+                };
+                const s32 FootBones[2] =
+                {
+                    m_Loco.m_Player.GetBoneIndex( "B_02_Leg_L_Foot" ),
+                    m_Loco.m_Player.GetBoneIndex( "B_02_Leg_R_Foot" )
+                };
+                const u32 ThighJoints[2] =
+                {
+                    a51::xr::BODY_JOINT_LEFT_UPPER_LEG,
+                    a51::xr::BODY_JOINT_RIGHT_UPPER_LEG
+                };
+                const u32 KneeJoints[2] =
+                {
+                    a51::xr::BODY_JOINT_LEFT_LOWER_LEG,
+                    a51::xr::BODY_JOINT_RIGHT_LOWER_LEG
+                };
+                const u32 AnkleJoints[2] =
+                {
+                    a51::xr::BODY_JOINT_LEFT_ANKLE,
+                    a51::xr::BODY_JOINT_RIGHT_ANKLE
+                };
+
+                for( u32 Leg = 0; Leg < 2; ++Leg )
+                {
+                    if( !BodyTargetValid[ThighJoints[Leg]] ||
+                        !BodyTargetValid[KneeJoints[Leg]] ||
+                        !BodyTargetValid[AnkleJoints[Leg]] )
+                    {
+                        continue;
+                    }
+
+                    bApplied |= ApplyTrackedLeg( *pGroup, m_Loco.m_Player,
+                        pSolved, nActiveBones,
+                        ThighBones[Leg], CalfBones[Leg], FootBones[Leg],
+                        BodyTargets[ThighJoints[Leg]],
+                        BodyTargets[KneeJoints[Leg]],
+                        BodyTargets[AnkleJoints[Leg]] );
+                }
+            }
+        }
+    }
 #if defined(TARGET_ANDROID)
     static u32 IKTraceFrame = 0;
     const xbool TraceVRIK = ( (++IKTraceFrame % 90u) == 0u );
@@ -263,8 +897,8 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
 
         vector3 WristTarget;
         matrix4 HandTargetRotation;
-        if( !GetVRHandTarget( *this, Hand, WristTarget,
-                              HandTargetRotation ) )
+        matrix4 ConstrainedHand;
+        if( !GetVrHandTransform( Hand, ConstrainedHand ) )
         {
 #if defined(TARGET_ANDROID)
             if( TraceVRIK )
@@ -274,19 +908,50 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
 #endif
             continue;
         }
+        WristTarget = ConstrainedHand.GetTranslation();
+        HandTargetRotation = ConstrainedHand;
 
-        vector3 Shoulder = m_Loco.m_Player.GetBonePosition( UpperBones[Hand] );
-        vector3 Elbow = m_Loco.m_Player.GetBonePosition( ForearmBones[Hand] );
-        vector3 Wrist = m_Loco.m_Player.GetBonePosition( HandBones[Hand] );
-        if( CrouchOffset > 0.0f )
+        vector3 Shoulder;
+        vector3 ModelElbow;
+        vector3 ElbowPole;
+        vector3 Wrist;
+        f32 UpperLength = 0.0f;
+        f32 ForearmLength = 0.0f;
+        const u32 TrackedShoulder = ( Hand == 0 )
+            ? a51::xr::BODY_JOINT_LEFT_SHOULDER
+            : a51::xr::BODY_JOINT_RIGHT_SHOULDER;
+        const u32 TrackedElbow = ( Hand == 0 )
+            ? a51::xr::BODY_JOINT_LEFT_LOWER_ARM
+            : a51::xr::BODY_JOINT_RIGHT_LOWER_ARM;
+        if( bBodyTrackingActive && BodyTargetValid[TrackedShoulder] &&
+            BodyTargetValid[TrackedElbow] )
         {
-            const vector3 AvatarOffset( 0.0f, -CrouchOffset, 0.0f );
-            Shoulder += AvatarOffset;
-            Elbow += AvatarOffset;
-            Wrist += AvatarOffset;
+            Shoulder = GetSolvedBoneJoint(
+                m_Loco.m_Player, pSolved, UpperBones[Hand] );
+            ModelElbow = GetSolvedBoneJoint(
+                m_Loco.m_Player, pSolved, ForearmBones[Hand] );
+            Wrist = GetSolvedBoneJoint(
+                m_Loco.m_Player, pSolved, HandBones[Hand] );
+            ElbowPole = BodyTargets[TrackedElbow];
+            UpperLength = ( ModelElbow - Shoulder ).Length();
+            ForearmLength = ( Wrist - ModelElbow ).Length();
         }
-        const f32 UpperLength = ( Elbow - Shoulder ).Length();
-        const f32 ForearmLength = ( Wrist - Elbow ).Length();
+        else
+        {
+            Shoulder = m_Loco.m_Player.GetBonePosition( UpperBones[Hand] );
+            ModelElbow = m_Loco.m_Player.GetBonePosition( ForearmBones[Hand] );
+            Wrist = m_Loco.m_Player.GetBonePosition( HandBones[Hand] );
+            if( CrouchOffset > 0.0f )
+            {
+                const vector3 AvatarOffset( 0.0f, -CrouchOffset, 0.0f );
+                Shoulder += AvatarOffset;
+                ModelElbow += AvatarOffset;
+                Wrist += AvatarOffset;
+            }
+            ElbowPole = ModelElbow;
+            UpperLength = ( ModelElbow - Shoulder ).Length();
+            ForearmLength = ( Wrist - ModelElbow ).Length();
+        }
 
 #if defined(TARGET_ANDROID)
         if( TraceVRIK )
@@ -305,7 +970,7 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
             { WristTarget.GetX(), WristTarget.GetY(), WristTarget.GetZ() };
 
         const a51::xr::ik_vec3 IkPole =
-            { Elbow.GetX(), Elbow.GetY(), Elbow.GetZ() };
+            { ElbowPole.GetX(), ElbowPole.GetY(), ElbowPole.GetZ() };
         a51::xr::arm_ik_result Result{};
         if( !a51::xr::SolveTwoBoneArm( IkShoulder, IkTarget, IkPole,
                                        UpperLength, ForearmLength, Result ) ||
@@ -322,7 +987,8 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
                                       Result.Wrist.Z );
 
         matrix4 UpperDelta;
-        if( !BuildBoneDelta( Elbow - Shoulder, TargetElbow - Shoulder,
+        if( !BuildBoneDelta( ModelElbow - Shoulder,
+                             TargetElbow - Shoulder,
                              Shoulder, UpperDelta ) )
         {
             continue;
@@ -330,7 +996,7 @@ const matrix4* player::ApplyVrArmIK( const matrix4* pMatrices,
         ApplyBoneDeltaToSubtree( *pGroup, pSolved, nActiveBones,
                                  UpperBones[Hand], UpperDelta );
 
-        const vector3 ElbowAfterUpper = UpperDelta * Elbow;
+        const vector3 ElbowAfterUpper = UpperDelta * ModelElbow;
         const vector3 WristAfterUpper = UpperDelta * Wrist;
         matrix4 ForearmDelta;
         if( !BuildBoneDelta( WristAfterUpper - ElbowAfterUpper,
@@ -445,7 +1111,7 @@ const matrix4* player::ApplyVrHeadVisibility( const matrix4* pMatrices,
 #endif
 }
 
-void player::UpdateVrPistolAttachment( const matrix4* pMatrices,
+void player::UpdateVrWeaponAttachment( const matrix4* pMatrices,
                                        s32 nActiveBones )
 {
 #if defined( A51_ENABLE_OPENXR )
@@ -455,33 +1121,14 @@ void player::UpdateVrPistolAttachment( const matrix4* pMatrices,
         return;
     }
 
-    const s32 WeaponIndex =
-        inventory2::ItemToWeaponIndex( INVEN_WEAPON_DESERT_EAGLE );
-    if( WeaponIndex < 0 || WeaponIndex >= INVEN_NUM_WEAPONS ||
-        m_VrWeaponRuntime[WeaponIndex].State != VR_WEAPON_HELD )
-        return;
-
-    const s32 Hand = m_VrWeaponRuntime[WeaponIndex].Hand;
-    if( Hand < 0 || Hand > 1 )
-        return;
-
-    /* Preserve the authored grip offset, but carry the socket through the
-     * hand IK transform. The attach bone is not necessarily a child of the
-     * wrist, so pMatrices[AttachBone] alone can lag behind the visible hand. */
-    static const char* const WeaponAttachBones[2] =
-    {
-        "Attach_L", "Attach_R"
-    };
-    const s32 AttachBone = m_Loco.m_Player.GetBoneIndex(
-        WeaponAttachBones[Hand] );
+    /* Use the right-hand weapon socket as the shared grip calibration for
+     * every firearm. Its left counterpart has a different authored rotation. */
+    const s32 CalibrationHand = 1;
+    const s32 AttachBone = m_Loco.m_Player.GetBoneIndex( "Attach_R" );
     const s32 HandBone = m_Loco.m_Player.GetBoneIndex(
-        a51::xr::kMultiplayerHandBones[Hand] );
+        a51::xr::kMultiplayerHandBones[CalibrationHand] );
     if( AttachBone < 0 || AttachBone >= nActiveBones ||
         HandBone < 0 || HandBone >= nActiveBones )
-        return;
-
-    new_weapon* pWeapon = GetCurrentWeaponPtr();
-    if( !pWeapon || m_CurrentWeaponItem != INVEN_WEAPON_DESERT_EAGLE )
         return;
 
     matrix4 HandBefore = m_Loco.m_Player.GetBoneL2W( HandBone );
@@ -490,62 +1137,56 @@ void player::UpdateVrPistolAttachment( const matrix4* pMatrices,
     matrix4 HandBeforeInverse = HandBefore;
     if( !HandBeforeInverse.InvertRT() )
         return;
-    matrix4 HandAfter = pMatrices[HandBone];
-    HandAfter.PreTranslate(
-        m_Loco.m_Player.GetBoneBindPosition( HandBone ) );
     matrix4 AttachBefore = m_Loco.m_Player.GetBoneL2W( AttachBone );
     AttachBefore.PreTranslate(
         m_Loco.m_Player.GetBoneBindPosition( AttachBone ) );
-    matrix4 WeaponAttachL2W =
-        HandAfter * HandBeforeInverse * AttachBefore;
-    matrix4 ControllerHand;
-    if( GetVrHandTransform( Hand, ControllerHand ) )
+    matrix4 WeaponGripInHand = HandBeforeInverse * AttachBefore;
+
+    for( s32 WeaponIndex = 0; WeaponIndex < INVEN_NUM_WEAPONS;
+         ++WeaponIndex )
     {
+        const inven_item Item =
+            inventory2::WeaponIndexToItem( WeaponIndex );
+        if( Item == INVEN_NULL || Item == INVEN_WEAPON_SCANNER ||
+            Item == INVEN_WEAPON_MUTATION )
+            continue;
+
         vr_weapon_runtime& Runtime = m_VrWeaponRuntime[WeaponIndex];
-        if( Hand == 1 )
-        {
-            /* The NPC weapon rig's barrel axis is perpendicular to the
-             * tracked hand's forward axis. Rotate it 90 degrees around local
-             * X so the barrel follows the forward aiming direction. */
-            WeaponAttachL2W.SetTranslation(
-                ControllerHand.GetTranslation() );
-            matrix4 ControllerHandInverse = ControllerHand;
-            if( ControllerHandInverse.InvertRT() )
-            {
-                Runtime.HandGripOffset =
-                    ControllerHandInverse * WeaponAttachL2W;
-                Runtime.HandGripOffset.SetTranslation(
-                    vector3( 0.0f, 0.0f, 0.0f ) );
-                matrix4 WeaponAxisCorrection;
-                WeaponAxisCorrection.Setup(
-                    vector3( 1.0f, 0.0f, 0.0f ), R_90 + R_180 );
-                Runtime.HandGripOffset =
-                    Runtime.HandGripOffset * WeaponAxisCorrection;
-                Runtime.HandGripOffset.SetTranslation(
-                    vector3( 0.0f, -8.0f, -8.0f ) );
-                Runtime.HandGripOffsetInitialized = TRUE;
-                WeaponAttachL2W = ControllerHand * Runtime.HandGripOffset;
-            }
-        }
-        else
-        {
-            matrix4 ControllerHandInverse = ControllerHand;
-            if( ControllerHandInverse.InvertRT() )
-            {
-                if( !Runtime.HandGripOffsetInitialized )
-                {
-                    Runtime.HandGripOffset =
-                        ControllerHandInverse * WeaponAttachL2W;
-                    Runtime.HandGripOffsetInitialized = TRUE;
-                }
-                WeaponAttachL2W = ControllerHand * Runtime.HandGripOffset;
-            }
-        }
+        if( Runtime.State != VR_WEAPON_HELD ||
+            Runtime.Hand < 0 || Runtime.Hand > 1 )
+            continue;
+
+        matrix4 ControllerHand;
+        if( !GetVrHandTransform( Runtime.Hand, ControllerHand ) )
+            continue;
+
+        new_weapon* pWeapon = GetWeaponPtr( Item );
+        if( !pWeapon )
+            continue;
+
+        Runtime.HandGripOffset = WeaponGripInHand;
+        Runtime.HandGripOffset.SetTranslation(
+            vector3( 0.0f, 0.0f, 0.0f ) );
+        matrix4 WeaponAxisCorrection;
+        WeaponAxisCorrection.Setup(
+            vector3( 1.0f, 0.0f, 0.0f ), R_90 + R_180 );
+        Runtime.HandGripOffset =
+            Runtime.HandGripOffset * WeaponAxisCorrection;
+        matrix4 WeaponRollCorrection;
+        WeaponRollCorrection.Setup(
+            vector3( 0.0f, 0.0f, 1.0f ), R_180 );
+        Runtime.HandGripOffset =
+            Runtime.HandGripOffset * WeaponRollCorrection;
+        Runtime.HandGripOffset.SetTranslation(
+            vector3( 0.0f, -8.0f, 4.0f ) );
+        Runtime.HandGripOffsetInitialized = TRUE;
+
+        matrix4 WeaponAttachL2W = ControllerHand * Runtime.HandGripOffset;
+        Runtime.Transform = WeaponAttachL2W;
+        pWeapon->SetVrWorldTransform( WeaponAttachL2W );
+        pWeapon->SetZone1( GetZone1() );
+        pWeapon->SetZone2( GetZone2() );
     }
-    m_VrWeaponRuntime[WeaponIndex].Transform = WeaponAttachL2W;
-    pWeapon->SetVrWorldTransform( WeaponAttachL2W );
-    pWeapon->SetZone1( GetZone1() );
-    pWeapon->SetZone2( GetZone2() );
 #else
     (void)pMatrices;
     (void)nActiveBones;
@@ -682,6 +1323,22 @@ void player::OnRenderTransparent(void)
 
     if( IsVrAvatarMode() )
     {
+        hud_ammo* pVrAmmoHud = NULL;
+        const slot_id HudSlot = g_ObjMgr.GetFirst( object::TYPE_HUD_OBJECT );
+        if( HudSlot != SLOT_NULL )
+        {
+            object* pHudObject = g_ObjMgr.GetObjectBySlot( HudSlot );
+            if( pHudObject )
+            {
+                hud_object& Hud = hud_object::GetSafeType( *pHudObject );
+                player_hud& PlayerHud =
+                    Hud.GetPlayerHud( g_RenderContext.LocalPlayerIndex );
+                if( !PlayerHud.m_Ammo.m_AmmoHudInited )
+                    PlayerHud.m_Ammo.Init();
+                pVrAmmoHud = &PlayerHud.m_Ammo;
+            }
+        }
+
         for( s32 WeaponIndex = 0; WeaponIndex < INVEN_NUM_WEAPONS;
              ++WeaponIndex )
         {
@@ -700,12 +1357,15 @@ void player::OnRenderTransparent(void)
             const xbool HasWorldModel = pVrWeapon->HasVrWorldModel();
             const xbool IsHeld =
                 ( m_VrWeaponRuntime[WeaponIndex].State == VR_WEAPON_HELD );
+            const xbool IsActiveScanner =
+                ( Item == INVEN_WEAPON_SCANNER ) && m_VrScannerActive &&
+                ( Item == m_CurrentWeaponItem );
             pVrWeapon->SetRenderState(
                 HasWorldModel
                     ? new_weapon::RENDER_STATE_NPC
                     : new_weapon::RENDER_STATE_PLAYER );
             pVrWeapon->OnRenderTransparent();
-            if( IsHeld && Item == m_CurrentWeaponItem )
+            if( IsHeld || IsActiveScanner )
             {
                 vector3 FirePosition;
                 radian3 FireTrajectory;
@@ -724,11 +1384,23 @@ void player::OnRenderTransparent(void)
                         base_projectile::ComputeInitialVelocity(
                             FireTrajectory, vector3( 0.0f, 0.0f, 0.0f ),
                             3000.0f );
+                    vector3 BarrelDirection( 0.0f, 0.0f, 1.0f );
+                    BarrelDirection.Rotate( FireTrajectory );
+                    BarrelDirection.SafeNormalize();
                     render::debug::Line(
                         FirePosition,
                         FirePosition + FireVelocity,
                         XCOLOR_GREEN,
                         render::PRIMITIVE_DEPTH_READ_ONLY );
+
+                    if( IsHeld && Item != INVEN_WEAPON_SCANNER &&
+                        pVrAmmoHud )
+                    {
+                        const matrix4& WeaponTransform =
+                            m_VrWeaponRuntime[WeaponIndex].Transform;
+                        DrawVrAmmoHud( *this, *pVrAmmoHud, *pVrWeapon,
+                                       WeaponTransform, BarrelDirection );
+                    }
                 }
             }
             pVrWeapon->SetRenderState( SavedState );
@@ -819,6 +1491,92 @@ void player::OnRenderWeapon( void )
             pVrWeapon->RenderWeapon( FALSE, GetFloorColor(),
                                      ( m_CloakState == CLOAKING_ON ) );
             pVrWeapon->SetRenderState( SavedState );
+        }
+
+        /* Show one magazine either in the free hand or under the shoulder.
+         * The game has no separate magazine asset, so use its matching small
+         * ammo pickup geometry as the visible magazine prop. */
+        inven_item MagazineWeapon = INVEN_NULL;
+        s32 MagazineHand = -1;
+        for( s32 Hand = 0; Hand < 2; ++Hand )
+        {
+            if( m_VrAmmoHandWeapon[Hand] != INVEN_NULL )
+            {
+                MagazineWeapon = m_VrAmmoHandWeapon[Hand];
+                MagazineHand = Hand;
+                break;
+            }
+        }
+
+        if( MagazineWeapon == INVEN_NULL )
+        {
+            MagazineWeapon = m_CurrentWeaponItem;
+            new_weapon* pCurrentWeapon = GetWeaponPtr( MagazineWeapon );
+            if( !pCurrentWeapon ||
+                ( pCurrentWeapon->GetAmmoCount(
+                      new_weapon::AMMO_PRIMARY ) > 0 ) ||
+                ( pCurrentWeapon->GetTotalPrimaryAmmo() <= 0 ) )
+            {
+                MagazineWeapon = INVEN_NULL;
+            }
+        }
+
+        if( MagazineWeapon != INVEN_NULL )
+        {
+            new_weapon* pMagazineWeapon = GetWeaponPtr( MagazineWeapon );
+            const inven_item AmmoItem =
+                inventory2::WeaponToAmmo( MagazineWeapon );
+            if( pMagazineWeapon && AmmoItem != INVEN_NULL )
+            {
+                if( m_VrAmmoVisualItem != AmmoItem )
+                {
+                    const f32 AmmoPerClip = (f32)pMagazineWeapon->GetAmmoPerClip(
+                        new_weapon::AMMO_PRIMARY );
+                    m_VrAmmoVisual.SetUpRigidGeom(
+                        inventory2::ItemToPickupGeomName(
+                            AmmoItem, MAX( 1.0f, AmmoPerClip ) ) );
+                    m_VrAmmoVisualItem = AmmoItem;
+                }
+
+                if( m_VrAmmoVisual.GetRigidGeom() )
+                {
+                    matrix4 MagazineTransform;
+                    xbool bRenderMagazine = FALSE;
+                    if( MagazineHand >= 0 )
+                    {
+                        bRenderMagazine = GetVrHandTransform(
+                            MagazineHand, MagazineTransform );
+                    }
+                    else
+                    {
+                        const s32 RootBone = m_Loco.m_Player.GetBoneIndex(
+                            "B_01_Root" );
+                        if( RootBone >= 0 )
+                        {
+                            MagazineTransform =
+                                m_Loco.m_Player.GetBoneL2W( RootBone );
+                            MagazineTransform.ClearTranslation();
+                            MagazineTransform.ClearScale();
+                            vector3 MagazinePos = GetPosition();
+                            MagazinePos.GetY() -=
+                                m_fCurrentCrouchFactor * 70.0f;
+                            MagazinePos += MagazineTransform.RotateVector(
+                                vector3( 0.0f, 132.0f, 26.0f ) );
+                            MagazineTransform.SetTranslation( MagazinePos );
+                            bRenderMagazine = TRUE;
+                        }
+                    }
+
+                    if( bRenderMagazine )
+                    {
+                        const u32 RenderFlags =
+                            ( GetFlagBits() & object::FLAG_CHECK_PLANES )
+                                ? render::CLIPPED : 0;
+                        m_VrAmmoVisual.Render( &MagazineTransform,
+                                               RenderFlags );
+                    }
+                }
+            }
         }
         return;
     }

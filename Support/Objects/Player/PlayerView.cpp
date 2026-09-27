@@ -321,7 +321,54 @@ PlayerViewSample player::BuildFirstPersonViewSample( void )
     Sample.XFOV = m_ViewInfo.XFOV;
 
     radian3 Rot( 0.0f, 0.0f, 0.0f );
-    vector3 const Pos = GetDefaultViewPos();
+    vector3 Pos = GetDefaultViewPos();
+
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() )
+    {
+        a51::xr::eye_view XREye{};
+        if( g_XRSession.GetEyeView( 0, XREye ) )
+        {
+            const vector3 DesiredCameraPosition =
+                Pos + m_VrRoomScaleCameraOffset;
+            vector3 SafeCameraPosition = Pos;
+            vector3 Remaining = DesiredCameraPosition - SafeCameraPosition;
+            for( s32 Iteration = 0; Iteration < 2; ++Iteration )
+            {
+                if( Remaining.LengthSquared() <= 0.0001f )
+                    break;
+
+                g_CollisionMgr.UseLowPoly();
+                g_CollisionMgr.SphereSetup( GetGuid(), SafeCameraPosition,
+                                            SafeCameraPosition + Remaining,
+                                            12.0f );
+                g_CollisionMgr.CheckCollisions(
+                    object::TYPE_ALL_TYPES,
+                    object::ATTR_BLOCKS_CHARACTER,
+                    object::ATTR_COLLISION_PERMEABLE );
+                if( g_CollisionMgr.m_nCollisions == 0 )
+                {
+                    SafeCameraPosition += Remaining;
+                    break;
+                }
+
+                const collision_mgr::collision& Collision =
+                    g_CollisionMgr.m_Collisions[0];
+                const f32 SafeT = x_clamp( Collision.T - 0.01f,
+                                           0.0f, 1.0f );
+                SafeCameraPosition += Remaining * SafeT;
+                Remaining = DesiredCameraPosition - SafeCameraPosition;
+                const f32 IntoSurface =
+                    v3_Dot( Remaining, Collision.Plane.Normal );
+                if( IntoSurface < 0.0f )
+                    Remaining -= Collision.Plane.Normal * IntoSurface;
+                else
+                    break;
+            }
+            Pos = SafeCameraPosition;
+        }
+    }
+#endif
 
     if( (m_CurrentWeaponItem != INVEN_NULL) && (m_iCameraBone != -1) )
     {

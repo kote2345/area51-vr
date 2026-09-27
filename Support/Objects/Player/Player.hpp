@@ -352,13 +352,15 @@ public:
             xbool           IsAvatar            ( void );
             xbool           IsVrAvatarMode      ( void ) const;
             xbool           GetVrHandTransform  ( u32 Hand,
-                                                   matrix4& Transform ) const;
+                                                   matrix4& Transform );
+            xbool           GetVrTrackedHandTransform( u32 Hand,
+                                                        matrix4& Transform ) const;
             void            UpdateVrWeapons     ( f32 DeltaTime );
             const matrix4*  ApplyVrArmIK        ( const matrix4* pMatrices,
                                                  s32 nActiveBones );
             const matrix4*  ApplyVrHeadVisibility( const matrix4* pMatrices,
                                                   s32 nActiveBones );
-            void            UpdateVrPistolAttachment( const matrix4* pMatrices,
+            void            UpdateVrWeaponAttachment( const matrix4* pMatrices,
                                                        s32 nActiveBones );
             s32             GetVrAvatarBoneCount( void );
             xbool           IsMutated           ( void ) { return m_bIsMutated; }
@@ -804,6 +806,9 @@ public:
     virtual xbool               UpdateLadderMovement        ( f32 DeltaTime ) ;
     virtual void                UpdateMovement              ( f32 DeltaTime );
             void                UpdateCrouchHeight          ( const f32& rDeltaTime );
+#if defined( A51_ENABLE_OPENXR )
+            void                UpdateVrPhysicalCrouch      ( f32 DeltaTime );
+#endif
 
     //------------------------------------------------------------------------------
     // Input handlers
@@ -1361,11 +1366,31 @@ protected:
     f32                     m_VrGripAmount[2];
     f32                     m_VrTriggerAmount[2];
     f32                     m_VrPreviousGrip[2];
+    f32                     m_VrFireCooldown[2];
     xbool                   m_VrPreviousRightA;
     xbool                   m_VrPreviousRightB;
     vector3                 m_VrControllerVelocity[2];
     vector3                 m_VrPreviousControllerPosition[2];
     xbool                   m_VrControllerPositionValid[2];
+    vector3                 m_VrRoomScalePreviousAnchorPosition;
+    vector3                 m_VrRoomScaleHeadOffsetReference;
+    vector3                 m_VrRoomScaleCameraOffset;
+    xbool                   m_VrRoomScalePositionValid;
+    xbool                   m_VrRoomScaleUsesBodyTracking;
+    xbool                   m_bVrButtonCrouching;
+    xbool                   m_bVrPhysicalCrouching;
+    xbool                   m_VrStandingHipHeightValid;
+    f32                     m_VrStandingHipHeight;
+    f32                     m_VrFilteredHipHeight;
+    f32                     m_VrPhysicalCrouchFactor;
+    matrix4                 m_VrCollisionHandTransform[2];
+    xbool                   m_VrCollisionHandTransformValid[2];
+    inven_item              m_VrAmmoHandWeapon[2];
+    rigid_inst              m_VrAmmoVisual;
+    inven_item              m_VrAmmoVisualItem;
+    xbool                   m_VrTestWeaponsGranted;
+    xbool                   m_VrTestWeaponAmmoGranted[INVEN_NUM_WEAPONS];
+    xbool                   m_VrScannerActive;
     
     // Can we do a tap fire?  Resets when the player releases the button (or maybe in the future after a timer?).
     xbool                   m_bCanTapFire;

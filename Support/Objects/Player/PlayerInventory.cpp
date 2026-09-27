@@ -306,7 +306,9 @@ void player::SetFlashlightActive( xbool bOn )
 
 
     new_weapon* pWeapon = GetCurrentWeaponPtr();
-    const xbool bCanUseFlashlight = ( pWeapon && pWeapon->HasFlashlight() && pWeapon->CheckFlashlightPoint() );
+    const xbool bCanUseFlashlight = IsVrAvatarMode() ||
+        ( pWeapon && pWeapon->HasFlashlight() &&
+          pWeapon->CheckFlashlightPoint() );
     const xbool bWasUsingFlashlight = m_bUsingFlashlight;
     m_bUsingFlashlight = ( bOn && bCanUseFlashlight );
 
@@ -924,7 +926,8 @@ xbool player::OnPickup( pickup& Pickup )
         f32 BestDistanceSqr = x_sqr( 90.0f );
         for( s32 Hand = 0; Hand < 2; ++Hand )
         {
-            if( m_VrGripAmount[Hand] < 0.70f )
+            if( m_VrGripAmount[Hand] < 0.70f ||
+                m_VrHeldWeapon[Hand] != INVEN_NULL )
                 continue;
 
             matrix4 HandTransform;
@@ -947,6 +950,34 @@ xbool player::OnPickup( pickup& Pickup )
 
         m_VrPendingPickupWeapon = PickupItem;
         m_VrPendingPickupHand = BestHand;
+    }
+    else if( IsVrAvatarMode() &&
+             IN_RANGE( INVEN_AMMO_FIRST, PickupItem, INVEN_AMMO_LAST ) )
+    {
+        /* Ammo must be reached and gripped just like a weapon. The player's
+         * body collision alone must never collect it in VR. */
+        xbool bAmmoInHand = FALSE;
+        for( s32 Hand = 0; Hand < 2; ++Hand )
+        {
+            if( ( m_VrGripAmount[Hand] < 0.70f ) ||
+                ( m_VrHeldWeapon[Hand] != INVEN_NULL ) ||
+                ( m_VrAmmoHandWeapon[Hand] != INVEN_NULL ) )
+                continue;
+
+            matrix4 HandTransform;
+            if( !GetVrHandTransform( Hand, HandTransform ) )
+                continue;
+
+            if( ( HandTransform.GetTranslation() - Pickup.GetPosition() )
+                    .LengthSquared() <= x_sqr( 90.0f ) )
+            {
+                bAmmoInHand = TRUE;
+                break;
+            }
+        }
+
+        if( !bAmmoInHand )
+            return FALSE;
     }
 
 #ifndef X_EDITOR

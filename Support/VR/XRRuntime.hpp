@@ -86,6 +86,7 @@ xbool PlatformGetSystemInfo  ( void*       pInstance,
                                system_info& Info,
                                char*        pError,
                                s32          ErrorSize );
+xbool PlatformHasFullBodyTrackingExtension( void );
 
 } // namespace a51::xr
 

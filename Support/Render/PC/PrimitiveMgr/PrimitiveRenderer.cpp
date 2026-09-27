@@ -271,6 +271,13 @@ xbool PrimitiveRenderer::SamplerPresetFromMode( render::primitive_sampler_mode s
         }
         break;
 
+        case render::PRIMITIVE_SAMPLER_POINT_CLAMP:
+        {
+            preset = RSTATE_SAMPLER_PRESET_POINT_CLAMP;
+            return TRUE;
+        }
+        break;
+
         default:
         {
             return FALSE;

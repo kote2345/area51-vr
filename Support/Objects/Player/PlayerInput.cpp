@@ -71,6 +71,93 @@ static const f32 s_JumpBufferDuration             = 0.12f;
 // FUNCTIONS
 //==============================================================================
 
+#if defined( A51_ENABLE_OPENXR )
+void player::UpdateVrPhysicalCrouch( f32 DeltaTime )
+{
+    if( !IsVrAvatarMode() )
+        return;
+
+    a51::xr::eye_view XREye{};
+    f32 CrouchDrop = 0.0f;
+    xbool HasTrackedHips = FALSE;
+    a51::xr::body_tracking_pose BodyPose{};
+    if( g_XRSession.GetEyeView( 0, XREye ) &&
+        g_XRSession.GetBodyTrackingPose( BodyPose ) &&
+        BodyPose.HighFidelity && BodyPose.Confidence >= 0.25f &&
+        BodyPose.Joints[a51::xr::BODY_JOINT_HIPS].PositionValid )
+    {
+        const a51::xr::body_joint_pose& Hips =
+            BodyPose.Joints[a51::xr::BODY_JOINT_HIPS];
+        const vector3 HeadOffset(
+            -XREye.HeadPosition[0] * 100.0f,
+             XREye.HeadPosition[1] * 100.0f,
+            -XREye.HeadPosition[2] * 100.0f );
+        const vector3 HipsRelativeToHead(
+            -Hips.Position[0] * 100.0f,
+             Hips.Position[1] * 100.0f,
+            -Hips.Position[2] * 100.0f );
+        quaternion HeadRotation( -XREye.Orientation[0],
+                                   XREye.Orientation[1],
+                                  -XREye.Orientation[2],
+                                   XREye.Orientation[3] );
+        HeadRotation.Normalize();
+        matrix4 HeadLocal;
+        HeadLocal.Identity();
+        HeadLocal.SetRotation( HeadRotation );
+        const f32 HipHeight = ( HeadOffset +
+            HeadLocal.RotateVector( HipsRelativeToHead ) ).GetY();
+
+        if( !m_VrStandingHipHeightValid )
+        {
+            m_VrStandingHipHeight = HipHeight;
+            m_VrFilteredHipHeight = HipHeight;
+            m_VrStandingHipHeightValid = TRUE;
+        }
+        else
+        {
+            const f32 FilterAmount = x_clamp( DeltaTime * 12.0f,
+                                               0.0f, 1.0f );
+            m_VrFilteredHipHeight +=
+                ( HipHeight - m_VrFilteredHipHeight ) * FilterAmount;
+            if( !m_bVrPhysicalCrouching && !m_bIsAirborn &&
+                ( HipHeight > m_VrStandingHipHeight ) )
+            {
+                m_VrStandingHipHeight = HipHeight;
+            }
+        }
+
+        CrouchDrop = MAX( 0.0f,
+                          m_VrStandingHipHeight - m_VrFilteredHipHeight );
+        HasTrackedHips = TRUE;
+    }
+    else if( g_XRSession.GetEyeView( 0, XREye ) )
+    {
+        // The tracking origin is captured at the head position when the XR
+        // session starts, so this is a conservative fallback without hips.
+        CrouchDrop = MAX( 0.0f, -XREye.HeadPosition[1] * 100.0f );
+    }
+
+    const f32 EnterCrouchDrop = HasTrackedHips ? 19.0f : 30.0f;
+    const f32 ExitCrouchDrop  = HasTrackedHips ? 13.0f : 22.0f;
+    if( m_bVrPhysicalCrouching )
+        m_bVrPhysicalCrouching = ( CrouchDrop > ExitCrouchDrop );
+    else
+        m_bVrPhysicalCrouching = ( CrouchDrop >= EnterCrouchDrop );
+
+    m_VrPhysicalCrouchFactor = x_clamp( CrouchDrop / 70.0f,
+                                        0.0f, 1.0f );
+    const xbool IsCrouchingNow = m_bVrButtonCrouching ||
+                                 m_bVrPhysicalCrouching;
+    if( IsCrouching() != IsCrouchingNow )
+    {
+        SetIsCrouching( IsCrouchingNow );
+        m_ArmsVelocity += vector3( 0.0f,
+            IsCrouchingNow ? -s_CrouchUpVelocity : s_CrouchUpVelocity,
+            0.0f );
+    }
+}
+#endif
+
 void player::UpdateUserInput(  f32 DeltaTime )
 {
     if( !m_bActivePlayer )
@@ -205,6 +292,7 @@ void player::OnButtonInput( f32 DeltaTime )
             m_VrPreviousRightA = FALSE;
             m_VrPreviousRightB = FALSE;
         }
+        UpdateVrPhysicalCrouch( DeltaTime );
     }
 #endif
 
@@ -352,23 +440,35 @@ void player::OnButtonInput( f32 DeltaTime )
     // VR right-A crouch is a press-to-toggle action. OpenXR publishes button
     // transitions, not a held gamepad state, and the VR binding must work
     // regardless of the desktop hold/toggle preference.
-    if( p.GetCrouchOn() || IsVrAvatarMode() )
+    if( IsVrAvatarMode() )
     {
         xbool CrouchKeyPressed = Input.WasPressed( PlayerAction::Crouch ) ||
                                  bVrRightCrouchPressed;
+        if( CrouchKeyPressed && !m_bInTurret )
+        {
+            m_bVrButtonCrouching = !m_bVrButtonCrouching;
+            const xbool IsCrouchingNow = m_bVrButtonCrouching ||
+                                         m_bVrPhysicalCrouching;
+            if( IsCrouching() != IsCrouchingNow )
+            {
+                SetIsCrouching( IsCrouchingNow );
+                m_ArmsVelocity += vector3( 0.0f,
+                    IsCrouchingNow ? -s_CrouchUpVelocity
+                                   : s_CrouchUpVelocity, 0.0f );
+            }
+        }
+    }
+    else if( p.GetCrouchOn() )
+    {
+        xbool CrouchKeyPressed = Input.WasPressed( PlayerAction::Crouch );
         if( CrouchKeyPressed )
         {
             // crouch is a toggle and we're crouching so turn it off
             if( IsCrouching() )
-            {
                 bStopCrouching = TRUE;
-            }
-            else if ( !m_bInTurret )
+            else if( !m_bInTurret )
             {
-                // move the arms a little
                 m_ArmsVelocity += vector3( 0.0f, -s_CrouchUpVelocity, 0.0f );
-
-                // Start crouching
                 SetIsCrouching( TRUE );
             }
         }
@@ -428,7 +528,17 @@ void player::OnButtonInput( f32 DeltaTime )
                 m_JumpBufferTime = 0.0f;
 
                 // Stop crouching when the jump actually starts.
-                SetIsCrouching( FALSE );
+#if defined( A51_ENABLE_OPENXR )
+                if( IsVrAvatarMode() )
+                {
+                    m_bVrButtonCrouching = FALSE;
+                    SetIsCrouching( m_bVrPhysicalCrouching );
+                }
+                else
+#endif
+                {
+                    SetIsCrouching( FALSE );
+                }
             }
         }
     }

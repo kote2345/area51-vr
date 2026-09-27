@@ -32,6 +32,18 @@ static texture::handle s_FlashlightCookie;
 
 xbool flashlight_CalcTransform( player& Player, matrix4& L2W )
 {
+#if defined( A51_ENABLE_OPENXR )
+    if( Player.IsVrAvatarMode() )
+    {
+        const view& HeadView = Player.GetRenderView();
+        L2W = HeadView.GetV2W();
+        L2W.ClearScale();
+        L2W.SetTranslation( HeadView.GetPosition() +
+                            HeadView.GetViewZ() * 8.0f );
+        return TRUE;
+    }
+#endif
+
     new_weapon* pWeapon = Player.GetCurrentWeaponPtr();
     if( !pWeapon || !pWeapon->CheckFlashlightPoint() )
         return FALSE;

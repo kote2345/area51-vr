@@ -11,6 +11,7 @@
 #include "Objects/Turret.hpp"
 #include "NetworkMgr/GameMgr.hpp"
 #include "PerceptionMgr/PerceptionMgr.hpp"
+#include "CollisionMgr/CollisionMgr.hpp"
 
 #if defined( A51_ENABLE_OPENXR )
 #include "VR/XRSession.hpp"
@@ -402,12 +403,18 @@ void player::UpdateMovement( f32 DeltaTime )
     {
         ASSERT( FALSE );
         m_DeltaPos.Zero();
+#if defined( A51_ENABLE_OPENXR )
+        m_VrRoomScalePositionValid = FALSE;
+#endif
         return;
     }
 
     if( DeltaTime <= F32_MIN )
     {
         m_DeltaPos.Zero();
+#if defined( A51_ENABLE_OPENXR )
+        m_VrRoomScalePositionValid = FALSE;
+#endif
         return;
     }
 
@@ -415,12 +422,18 @@ void player::UpdateMovement( f32 DeltaTime )
         (IsCinemaRunning() && (GetCinemaCameraGuid() != 0)) )
     {
         m_DeltaPos.Zero();
+#if defined( A51_ENABLE_OPENXR )
+        m_VrRoomScalePositionValid = FALSE;
+#endif
         return;
     }
 
     if( UpdateLadderMovement( DeltaTime ) )
     {
         m_Movement.Clear();
+#if defined( A51_ENABLE_OPENXR )
+        m_VrRoomScalePositionValid = FALSE;
+#endif
         return;
     }
 
@@ -473,7 +486,95 @@ void player::UpdateMovement( f32 DeltaTime )
         MovementVelocity *= 0.45f;
     }
 
-    m_DeltaPos = MovementVelocity * DeltaTime;
+    const vector3 LocomotionDelta = MovementVelocity * DeltaTime;
+    vector3 RoomScaleDelta( 0.0f, 0.0f, 0.0f );
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() )
+    {
+        a51::xr::eye_view XREye{};
+        if( g_XRSession.GetEyeView( 0, XREye ) )
+        {
+            const vector3 HeadTrackingOffset(
+                -XREye.HeadPosition[0] * 100.0f,
+                 XREye.HeadPosition[1] * 100.0f,
+                -XREye.HeadPosition[2] * 100.0f );
+            vector3 AnchorTrackingOffset = HeadTrackingOffset;
+            xbool UsesBodyTracking = FALSE;
+            a51::xr::body_tracking_pose BodyPose{};
+            if( g_XRSession.GetBodyTrackingPose( BodyPose ) &&
+                BodyPose.HighFidelity && BodyPose.Confidence >= 0.25f &&
+                BodyPose.Joints[a51::xr::BODY_JOINT_HIPS].PositionValid )
+            {
+                const a51::xr::body_joint_pose& Hips =
+                    BodyPose.Joints[a51::xr::BODY_JOINT_HIPS];
+                const vector3 HipsRelativeToHead(
+                    -Hips.Position[0] * 100.0f,
+                     Hips.Position[1] * 100.0f,
+                    -Hips.Position[2] * 100.0f );
+                quaternion HeadRotation( -XREye.Orientation[0],
+                                           XREye.Orientation[1],
+                                          -XREye.Orientation[2],
+                                           XREye.Orientation[3] );
+                HeadRotation.Normalize();
+                matrix4 HeadLocal;
+                HeadLocal.Identity();
+                HeadLocal.SetRotation( HeadRotation );
+                AnchorTrackingOffset +=
+                    HeadLocal.RotateVector( HipsRelativeToHead );
+                UsesBodyTracking = TRUE;
+            }
+
+            vector3 AnchorRoomOffset = AnchorTrackingOffset;
+            AnchorRoomOffset.GetY() = 0.0f;
+            AnchorRoomOffset.RotateY( m_Yaw );
+            vector3 HeadFromAnchor = HeadTrackingOffset -
+                                     AnchorTrackingOffset;
+            // The actor root stays on the ground vertically. Preserve the
+            // HMD's room-height delta so physical squats lower the camera.
+            HeadFromAnchor.GetY() = HeadTrackingOffset.GetY();
+            HeadFromAnchor.RotateY( m_Yaw );
+
+            if( !m_VrRoomScalePositionValid ||
+                ( UsesBodyTracking != m_VrRoomScaleUsesBodyTracking ) )
+            {
+                // Rebase across tracking loss or fidelity changes to avoid
+                // moving the player when the anchor source changes.
+                m_VrRoomScalePreviousAnchorPosition = AnchorRoomOffset;
+                m_VrRoomScaleHeadOffsetReference = HeadFromAnchor;
+                m_VrRoomScaleCameraOffset.Zero();
+            }
+            else
+            {
+                RoomScaleDelta = AnchorRoomOffset -
+                                 m_VrRoomScalePreviousAnchorPosition;
+                m_VrRoomScaleCameraOffset = HeadFromAnchor -
+                                            m_VrRoomScaleHeadOffsetReference;
+                m_VrRoomScalePreviousAnchorPosition = AnchorRoomOffset;
+            }
+            m_VrRoomScaleUsesBodyTracking = UsesBodyTracking;
+            m_VrRoomScalePositionValid = TRUE;
+        }
+        else
+        {
+            // Rebase after tracking loss so a stale pose cannot move the actor.
+            m_VrRoomScalePositionValid = FALSE;
+            m_VrRoomScaleCameraOffset.Zero();
+        }
+    }
+    else
+    {
+        m_VrRoomScalePositionValid = FALSE;
+        m_VrRoomScaleCameraOffset.Zero();
+    }
+#endif
+
+    // Horizontal HMD movement drives the collision body. Keep the camera
+    // anchored to that body so it cannot continue through a wall after the
+    // character capsule has been stopped by collision.
+    if( !m_bInTurret )
+        m_DeltaPos = LocomotionDelta + RoomScaleDelta;
+    else
+        m_DeltaPos = LocomotionDelta;
 
 #if defined( A51_ENABLE_OPENXR ) && defined(TARGET_ANDROID)
     if( TraceVRMovement )
@@ -525,6 +626,20 @@ void player::UpdateCharacterRotation( const f32& DeltaTime )
 
 void player::UpdateCrouchHeight( const f32& rDeltaTime )
 {
+#if defined( A51_ENABLE_OPENXR )
+    if( IsVrAvatarMode() && m_VrStandingHipHeightValid &&
+        ( !m_bVrButtonCrouching || m_bVrPhysicalCrouching ) )
+    {
+        /* Real crouches already lower the tracked head. Match the capsule
+         * and avatar root to the measured pelvis drop instead of adding the
+         * full button-crouch offset on top of the user's physical motion. */
+        const f32 NewCrouchFactor = m_VrPhysicalCrouchFactor;
+        if( m_Physics.SetCrouchParametric( NewCrouchFactor, TRUE ) )
+            m_fCurrentCrouchFactor = NewCrouchFactor;
+        return;
+    }
+#endif
+
     if ( m_bIsCrouching  )
     {
         //trying to crouch
@@ -991,6 +1106,14 @@ void player::Teleport( const vector3& Position,
     SetYaw( Yaw );
     m_bApplyingTeleport = FALSE;
     m_DeltaPos.Zero();
+#if defined( A51_ENABLE_OPENXR )
+    // A teleport changes the room-scale origin in game space. Start a fresh
+    // tracking baseline so the old physical offset is not applied twice.
+    m_VrRoomScalePreviousAnchorPosition.Zero();
+    m_VrRoomScaleHeadOffsetReference.Zero();
+    m_VrRoomScaleCameraOffset.Zero();
+    m_VrRoomScalePositionValid = FALSE;
+#endif
 
     m_Physics.InitialGroundCheck( Position );
     g_ZoneMgr.RebaseZoneTracking( *this,
@@ -1184,6 +1307,23 @@ void player::UpdateGhostLoco( f32 DeltaTime )
     /* The rendered headset view is body yaw plus this relative head yaw.
      * Give the same world heading to the avatar locomotion so the soldier
      * turns with the player when they look around in VR. */
+#if defined( A51_ENABLE_OPENXR )
+    const xbool bVrStickAnimation = IsVrAvatarMode();
+    const xbool bVrStickMoving = bVrStickAnimation &&
+        ( x_sqr( m_MoveInput.GamepadForward ) +
+          x_sqr( m_MoveInput.GamepadStrafe ) > x_sqr( 0.20f ) );
+    vector3 VrStickAnimationDelta( 0.0f, 0.0f, 0.0f );
+    if( bVrStickMoving )
+    {
+        VrStickAnimationDelta =
+            ( m_ForwardVelocity + m_StrafeVelocity ) * DeltaTime;
+        if( m_bIsCrouching )
+            VrStickAnimationDelta *= 0.45f;
+    }
+    m_Loco.SetVrStickAnimationInput( bVrStickAnimation,
+                                      bVrStickMoving,
+                                      VrStickAnimationDelta );
+#endif
     m_pLoco->SetYaw( BodyYaw );
     m_Loco.m_Player.SetVrBodyYaw( BodyYaw );
     OnAdvanceGhostLogic( DeltaTime );
@@ -1205,15 +1345,19 @@ void player::UpdateVrWeapons( f32 DeltaTime )
     xbool HandValid[2] = { FALSE, FALSE };
     for( s32 Hand = 0; Hand < 2; ++Hand )
     {
+        m_VrFireCooldown[Hand] = MAX( 0.0f,
+                                      m_VrFireCooldown[Hand] - DeltaTime );
+
         HandValid[Hand] = GetVrHandTransform( Hand, HandTransforms[Hand] );
         if( !HandValid[Hand] )
         {
             m_VrControllerPositionValid[Hand] = FALSE;
+            m_VrCollisionHandTransformValid[Hand] = FALSE;
             m_VrControllerVelocity[Hand].Zero();
             continue;
         }
 
-        const vector3 Position = HandTransforms[Hand].GetTranslation();
+        vector3 Position = HandTransforms[Hand].GetTranslation();
         if( m_VrControllerPositionValid[Hand] && ( DeltaTime > 0.0001f ) )
         {
             m_VrControllerVelocity[Hand] =
@@ -1234,21 +1378,121 @@ void player::UpdateVrWeapons( f32 DeltaTime )
     if( RootBone < 0 )
         return;
 
+    /* Keep a complete weapon set available while iterating on the VR grips.
+     * Weapon objects can become available after the first VR update, so keep
+     * retrying until every weapon with a blueprint has been created. */
+    if( !m_VrTestWeaponsGranted )
+    {
+        xbool AllWeaponObjectsReady = TRUE;
+        for( s32 WeaponIndex = 0; WeaponIndex < INVEN_NUM_WEAPONS;
+             ++WeaponIndex )
+        {
+            const inven_item Item =
+                inventory2::WeaponIndexToItem( WeaponIndex );
+            if( Item == INVEN_NULL || Item == INVEN_WEAPON_MUTATION ||
+                !inventory2::ItemToBlueprintName( Item ) )
+                continue;
+
+            // Grant inventory independently of render-object initialization.
+            m_Inventory2.SetAmount( Item, 1.0f );
+            new_weapon* pWeapon = GetWeaponPtr( Item );
+            if( !pWeapon )
+            {
+                AllWeaponObjectsReady = FALSE;
+                continue;
+            }
+
+            if( !m_VrTestWeaponAmmoGranted[WeaponIndex] )
+            {
+                pWeapon->AddAmmoToWeapon( pWeapon->GetMaxPrimaryAmmo(),
+                                          pWeapon->GetMaxSecondaryAmmo() );
+                pWeapon->RefillClip( new_weapon::AMMO_PRIMARY );
+                pWeapon->RefillClip( new_weapon::AMMO_SECONDARY );
+                m_VrTestWeaponAmmoGranted[WeaponIndex] = TRUE;
+            }
+        }
+        m_VrTestWeaponsGranted = AllWeaponObjectsReady;
+    }
+
     const f32 AvatarCrouchOffset = m_fCurrentCrouchFactor * 70.0f;
     matrix4 Body = m_Loco.m_Player.GetBoneL2W( RootBone );
     Body.ClearTranslation();
     Body.ClearScale();
 
-    const vector3 HolsterOffsets[6] =
+    const vector3 HolsterOffsets[INVEN_NUM_WEAPONS] =
     {
-        vector3( -24.0f, 82.0f, -12.0f ),
-        vector3(  24.0f, 82.0f, -12.0f ),
-        vector3(  26.0f, 135.0f, -42.0f ),
-        vector3(  26.0f, 90.0f,   8.0f ),
-        vector3( -16.0f, 70.0f, -20.0f ),
-        vector3(  16.0f, 70.0f, -20.0f )
+        vector3(   0.0f,   0.0f,   0.0f ), // null
+        vector3(   0.0f, 125.0f,   8.0f ), // scanner: attached to left wrist
+        vector3(  26.0f,  92.0f,  18.0f ), // desert eagle, right hip
+        vector3( -26.0f,  92.0f,  18.0f ), // dual eagle
+        vector3( -34.0f,  92.0f, -18.0f ), // SMP, left rear hip
+        vector3(  34.0f,  92.0f, -18.0f ), // dual SMP, right rear hip
+        vector3(  34.0f,  72.0f,  -8.0f ), // shotgun, right thigh
+        vector3( -34.0f,  72.0f,  -8.0f ), // dual shotguns, left thigh
+        vector3( -22.0f,  67.0f, -36.0f ), // sniper rifle, lower back
+        vector3(  22.0f,  67.0f, -36.0f ), // BBG, lower back
+        vector3( -42.0f, 105.0f, -30.0f ), // meson cannon, left back
+        vector3(  42.0f, 105.0f, -30.0f ), // TRA, right back
+        vector3(   0.0f,   0.0f,   0.0f )  // mutation is not a holstered gun
     };
     const radian HolsterYaw[2] = { R_90, -R_90 };
+
+    m_VrScannerActive = FALSE;
+    if( ( m_CurrentWeaponItem == INVEN_WEAPON_SCANNER ) &&
+        m_Inventory2.HasItem( INVEN_WEAPON_SCANNER ) &&
+        HandValid[0] && HandValid[1] )
+    {
+        matrix4 ScannerTransform = HandTransforms[0];
+        matrix4 ScannerRotation;
+        ScannerRotation.Setup( vector3( 1.0f, 0.0f, 0.0f ), R_90 + R_180 );
+        ScannerTransform = ScannerTransform * ScannerRotation;
+        ScannerTransform.SetTranslation(
+            HandTransforms[0].GetTranslation() +
+            HandTransforms[0].RotateVector( vector3( 0.0f, -3.0f, 7.0f ) ) );
+
+        vr_weapon_runtime& ScannerRuntime = m_VrWeaponRuntime[
+            inventory2::ItemToWeaponIndex( INVEN_WEAPON_SCANNER )];
+        ScannerRuntime.Transform = ScannerTransform;
+        ScannerRuntime.Initialized = TRUE;
+        ScannerRuntime.State = VR_WEAPON_HOLSTERED;
+        new_weapon* pScanner = GetWeaponPtr( INVEN_WEAPON_SCANNER );
+        if( pScanner )
+        {
+            pScanner->SetVisible( TRUE );
+            pScanner->SetRenderState( new_weapon::RENDER_STATE_NPC );
+            pScanner->SetVrWorldTransform( ScannerTransform );
+        }
+
+        const f32 WristDistanceSqr =
+            ( HandTransforms[1].GetTranslation() -
+              HandTransforms[0].GetTranslation() ).LengthSquared();
+        const xbool bActivateScanner =
+            ( m_VrGripAmount[1] >= 0.65f ) ||
+            ( m_VrTriggerAmount[1] >= 0.55f );
+        m_VrScannerActive = bActivateScanner &&
+                            ( WristDistanceSqr <= x_sqr( 28.0f ) );
+    }
+    else
+    {
+        new_weapon* pScanner = GetWeaponPtr( INVEN_WEAPON_SCANNER );
+        if( pScanner )
+            pScanner->SetVisible( FALSE );
+    }
+
+    /* A grip squeeze beside the headset toggles the head-mounted VR light. */
+    const vector3 HeadPosition = GetRenderView().GetPosition();
+    for( s32 Hand = 0; Hand < 2; ++Hand )
+    {
+        const xbool bGripPressed = ( m_VrGripAmount[Hand] >= 0.70f ) &&
+                                   ( m_VrPreviousGrip[Hand] < 0.70f );
+        if( bGripPressed && HandValid[Hand] &&
+            ( HandTransforms[Hand].GetTranslation() - HeadPosition )
+                .LengthSquared() <= x_sqr( 28.0f ) )
+        {
+            SetFlashlightActive( !m_bUsingFlashlight );
+            break;
+        }
+    }
 
     /* Releasing a weapon near its belt socket is the deliberate holster
      * gesture. Otherwise it gets a short physical drop before returning. */
@@ -1282,7 +1526,7 @@ void player::UpdateVrWeapons( f32 DeltaTime )
             SocketBase.GetY() -= AvatarCrouchOffset;
             const vector3 SocketPos =
                 SocketBase +
-                Body.RotateVector( HolsterOffsets[Index % 6] );
+                Body.RotateVector( HolsterOffsets[Index] );
             Socket.SetTranslation( SocketPos );
 
             if( ( Runtime.Transform.GetTranslation() - SocketPos ).LengthSquared()
@@ -1302,6 +1546,18 @@ void player::UpdateVrWeapons( f32 DeltaTime )
             Runtime.Hand = -1;
         }
         m_VrHeldWeapon[Hand] = INVEN_NULL;
+    }
+
+    /* Releasing a virtual magazine before inserting it returns it to the
+     * shoulder holster. No ammunition is spent until the magazine reaches the
+     * empty weapon. */
+    for( s32 Hand = 0; Hand < 2; ++Hand )
+    {
+        if( ( m_VrAmmoHandWeapon[Hand] != INVEN_NULL ) &&
+            ( m_VrGripAmount[Hand] <= 0.45f ) )
+        {
+            m_VrAmmoHandWeapon[Hand] = INVEN_NULL;
+        }
     }
 
     /* A world pickup passes its item and grabbing hand through OnPickup.
@@ -1356,15 +1612,15 @@ void player::UpdateVrWeapons( f32 DeltaTime )
         m_VrPendingPickupHand = -1;
     }
 
-    /* Grab the nearest owned weapon when a grip crosses its press threshold.
-     * Only one gun is active in the legacy firing model at a time. */
+    /* Grip pickups with the tracked hand. A free hand can take world ammo or
+     * a second weapon while the other hand is already occupied. */
     for( s32 Hand = 0; Hand < 2; ++Hand )
     {
         const xbool bGripPressed = ( m_VrGripAmount[Hand] >= 0.70f ) &&
                                    ( m_VrPreviousGrip[Hand] < 0.70f );
         if( !bGripPressed || !HandValid[Hand] ||
-            ( m_VrHeldWeapon[0] != INVEN_NULL ) ||
-            ( m_VrHeldWeapon[1] != INVEN_NULL ) )
+            ( m_VrHeldWeapon[Hand] != INVEN_NULL ) ||
+            ( m_VrAmmoHandWeapon[Hand] != INVEN_NULL ) )
             continue;
 
         /* Pickups normally activate from the player's body collision. In VR
@@ -1384,9 +1640,14 @@ void player::UpdateVrWeapons( f32 DeltaTime )
 
             pickup& Candidate = pickup::GetSafeType( *pObject );
             const inven_item Item = Candidate.GetItem();
+            const xbool bWeaponPickup =
+                IN_RANGE( INVEN_WEAPON_FIRST, Item, INVEN_WEAPON_LAST ) &&
+                ( Item != INVEN_WEAPON_MUTATION ) &&
+                ( Item != INVEN_WEAPON_SCANNER );
+            const xbool bAmmoPickup =
+                IN_RANGE( INVEN_AMMO_FIRST, Item, INVEN_AMMO_LAST );
             if( !Candidate.GetTakeable() ||
-                !IN_RANGE( INVEN_WEAPON_FIRST, Item, INVEN_WEAPON_LAST ) ||
-                Item == INVEN_WEAPON_MUTATION )
+                ( !bWeaponPickup && !bAmmoPickup ) )
                 continue;
 
             const f32 DistanceSqr =
@@ -1404,12 +1665,42 @@ void player::UpdateVrWeapons( f32 DeltaTime )
             continue;
         }
 
+        /* The virtual magazine lives behind the shoulders. It is available
+         * only for the held, empty weapon and only when reserve rounds remain. */
+        const inven_item HeldWeapon = m_VrHeldWeapon[1 - Hand];
+        new_weapon* pHeldWeapon =
+            ( HeldWeapon == m_CurrentWeaponItem )
+                ? GetWeaponPtr( HeldWeapon ) : NULL;
+        xbool bMagazineAlreadyHeld = FALSE;
+        for( s32 OtherHand = 0; OtherHand < 2; ++OtherHand )
+        {
+            if( m_VrAmmoHandWeapon[OtherHand] != INVEN_NULL )
+                bMagazineAlreadyHeld = TRUE;
+        }
+
+        if( pHeldWeapon && !bMagazineAlreadyHeld &&
+            ( pHeldWeapon->GetAmmoCount( new_weapon::AMMO_PRIMARY ) == 0 ) &&
+            pHeldWeapon->CanReload( new_weapon::AMMO_PRIMARY ) )
+        {
+            const vector3 AmmoHolsterOffset( 0.0f, 132.0f, 26.0f );
+            vector3 AmmoHolsterPos = GetPosition();
+            AmmoHolsterPos.GetY() -= AvatarCrouchOffset;
+            AmmoHolsterPos += Body.RotateVector( AmmoHolsterOffset );
+
+            if( ( HandPos - AmmoHolsterPos ).LengthSquared() <= x_sqr( 42.0f ) )
+            {
+                m_VrAmmoHandWeapon[Hand] = HeldWeapon;
+                continue;
+            }
+        }
+
         inven_item BestItem = INVEN_NULL;
         f32 BestDistanceSqr = x_sqr( 48.0f );
         for( s32 WeaponIndex = 0; WeaponIndex < INVEN_NUM_WEAPONS; ++WeaponIndex )
         {
             const inven_item Item = inventory2::WeaponIndexToItem( WeaponIndex );
             if( Item == INVEN_NULL || Item == INVEN_WEAPON_MUTATION ||
+                Item == INVEN_WEAPON_SCANNER ||
                 !m_Inventory2.HasItem( Item ) || !GetWeaponPtr( Item ) )
                 continue;
 
@@ -1458,6 +1749,8 @@ void player::UpdateVrWeapons( f32 DeltaTime )
             continue;
 
         vr_weapon_runtime& Runtime = m_VrWeaponRuntime[WeaponIndex];
+        if( Item == INVEN_WEAPON_SCANNER )
+            continue;
         if( !m_Inventory2.HasItem( Item ) || Item == INVEN_WEAPON_MUTATION )
         {
             pWeapon->SetVisible( FALSE );
@@ -1474,7 +1767,7 @@ void player::UpdateVrWeapons( f32 DeltaTime )
         SocketBase.GetY() -= AvatarCrouchOffset;
         const vector3 SocketPos =
             SocketBase +
-            Body.RotateVector( HolsterOffsets[WeaponIndex % 6] );
+            Body.RotateVector( HolsterOffsets[WeaponIndex] );
         Socket.SetTranslation( SocketPos );
 
         if( !Runtime.Initialized )
@@ -1494,6 +1787,9 @@ void player::UpdateVrWeapons( f32 DeltaTime )
             if( ( Runtime.Hand >= 0 ) && HandValid[Runtime.Hand] )
             {
                 Runtime.Transform = HandTransforms[Runtime.Hand];
+                if( Runtime.HandGripOffsetInitialized )
+                    Runtime.Transform = Runtime.Transform *
+                                        Runtime.HandGripOffset;
             }
             break;
 
@@ -1568,10 +1864,82 @@ void player::UpdateVrWeapons( f32 DeltaTime )
 
         pWeapon->SetVisible( TRUE );
         pWeapon->SetRenderState(
-            ( Item == INVEN_WEAPON_DESERT_EAGLE )
-                ? new_weapon::RENDER_STATE_PLAYER
-                : new_weapon::RENDER_STATE_NPC );
+            pWeapon->HasVrWorldModel()
+                ? new_weapon::RENDER_STATE_NPC
+                : new_weapon::RENDER_STATE_PLAYER );
         pWeapon->SetVrWorldTransform( Runtime.Transform );
+    }
+
+    /* Fire each held weapon from its own controller pose. The regular
+     * animation events only know about the currently selected weapon, so
+     * using them would make the second hand unable to fire independently. */
+    if( !m_bHidePlayerArms && !IsCinemaRunning() &&
+        !m_LockedView.IsActive() )
+    {
+        for( s32 Hand = 0; Hand < 2; ++Hand )
+        {
+            const inven_item Item = m_VrHeldWeapon[Hand];
+            if( Item == INVEN_NULL || !HandValid[Hand] ||
+                m_VrTriggerAmount[Hand] < 0.55f ||
+                m_VrFireCooldown[Hand] > 0.0f )
+                continue;
+
+            new_weapon* pWeapon = GetWeaponPtr( Item );
+            if( !pWeapon )
+                continue;
+
+            vector3 FirePosition;
+            radian3 FireRotation;
+            if( !GetVrHeldWeaponShot( pWeapon,
+                                      new_weapon::FIRE_POINT_DEFAULT,
+                                      FirePosition, FireRotation ) )
+                continue;
+
+            pWeapon->SetTarget( GetEnemyOnReticle() );
+            pWeapon->FireWeapon( FirePosition, vector3( 0.0f, 0.0f, 0.0f ),
+                                 0.0f, FireRotation, GetGuid(),
+                                 new_weapon::FIRE_POINT_DEFAULT );
+            m_VrFireCooldown[Hand] = 0.18f;
+        }
+    }
+
+    /* Insert the hand-held magazine once it reaches the held empty weapon.
+     * The normal player reload animation and input path are disabled in VR. */
+    for( s32 AmmoHand = 0; AmmoHand < 2; ++AmmoHand )
+    {
+        const inven_item AmmoWeapon = m_VrAmmoHandWeapon[AmmoHand];
+        if( AmmoWeapon == INVEN_NULL || !HandValid[AmmoHand] )
+            continue;
+
+        for( s32 WeaponHand = 0; WeaponHand < 2; ++WeaponHand )
+        {
+            if( ( m_VrHeldWeapon[WeaponHand] != AmmoWeapon ) ||
+                ( AmmoWeapon != m_CurrentWeaponItem ) )
+                continue;
+
+            new_weapon* pWeapon = GetWeaponPtr( AmmoWeapon );
+            const s32 WeaponIndex =
+                inventory2::ItemToWeaponIndex( AmmoWeapon );
+            if( !pWeapon || WeaponIndex < 0 ||
+                WeaponIndex >= INVEN_NUM_WEAPONS ||
+                ( pWeapon->GetAmmoCount( new_weapon::AMMO_PRIMARY ) > 0 ) ||
+                !pWeapon->CanReload( new_weapon::AMMO_PRIMARY ) )
+                continue;
+
+            const vector3 WeaponPos =
+                m_VrWeaponRuntime[WeaponIndex].Transform.GetTranslation();
+            const vector3 MagazinePos =
+                HandTransforms[AmmoHand].GetTranslation();
+            if( ( MagazinePos - WeaponPos ).LengthSquared() > x_sqr( 34.0f ) )
+                continue;
+
+            pWeapon->Reload( new_weapon::AMMO_PRIMARY );
+            pWeapon->SetReloadCompleted( TRUE );
+            m_VrAmmoHandWeapon[AmmoHand] = INVEN_NULL;
+            if( m_CurrentAnimState == ANIM_STATE_RELOAD )
+                SetAnimState( ANIM_STATE_IDLE );
+            break;
+        }
     }
 
     for( s32 Hand = 0; Hand < 2; ++Hand )

@@ -604,6 +604,10 @@ void player::OnEvent( const event& Event )
             case new_weapon::EVENT_FIRE_LEFT:
             case new_weapon::EVENT_FIRE_RIGHT:
             {
+#if defined( A51_ENABLE_OPENXR )
+                if( IsVrAvatarMode() )
+                    break;
+#endif
                 // don't allow player to switch weapons, zoom in, attack, etc.
                 if( m_bHidePlayerArms )
                 {
@@ -688,6 +692,10 @@ void player::OnEvent( const event& Event )
             case new_weapon::EVENT_ALT_FIRE_LEFT: 
             case new_weapon::EVENT_ALT_FIRE_RIGHT: 
             {
+#if defined( A51_ENABLE_OPENXR )
+                if( IsVrAvatarMode() )
+                    break;
+#endif
                 // don't allow player to switch weapons, zoom in, attack, etc.
                 if( m_bHidePlayerArms )
                 {

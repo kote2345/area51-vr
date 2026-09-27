@@ -116,6 +116,9 @@ public:
     s32                 TextHeight          (              const xwchar* pString, s32 Count = -1 ) const;
     u32                 LookUpCharacter     ( u32 c ) const;
     const Character&    GetCharacter        ( s32 Index ) const;
+    texture*            GetBitmapTexture    ( void ) const { return m_bitmap.GetPointer(); }
+    s32                 GetBitmapWidth      ( void ) const { return m_BmWidth; }
+    s32                 GetBitmapHeight     ( void ) const { return m_BmHeight; }
     s32                 GetLineHeight       ( void ) const { return m_Height; };
     const xwchar*       ClipEllipsis        ( const xwchar* pString, const irect& Rect ) const;
     void                TextWrap            ( const xwchar* pString, const irect& Rect, xwstring& WrappedString );

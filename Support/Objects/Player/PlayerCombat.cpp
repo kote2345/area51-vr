@@ -62,6 +62,10 @@ xbool player::IsFiring( void )
 #if defined( A51_ENABLE_OPENXR )
     if( IsVrAvatarMode() )
     {
+        if( ( m_CurrentWeaponItem == INVEN_WEAPON_SCANNER ) &&
+            m_VrScannerActive && !m_bRespawnButtonPressed )
+            return TRUE;
+
         for( s32 Hand = 0; Hand < 2; ++Hand )
         {
             if( ( m_VrHeldWeapon[Hand] == m_CurrentWeaponItem ) &&
@@ -156,7 +160,9 @@ xbool player::AllowedToFire( void )
 #if defined( A51_ENABLE_OPENXR )
     if( IsVrAvatarMode() &&
         ( m_VrHeldWeapon[0] == INVEN_NULL ) &&
-        ( m_VrHeldWeapon[1] == INVEN_NULL ) )
+        ( m_VrHeldWeapon[1] == INVEN_NULL ) &&
+        !( ( m_CurrentWeaponItem == INVEN_WEAPON_SCANNER ) &&
+           m_VrScannerActive ) )
     {
         return FALSE;
     }

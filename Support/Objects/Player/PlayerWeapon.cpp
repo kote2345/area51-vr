@@ -125,6 +125,11 @@ xbool player::LoadWarnsLowAmmo( void )
 //=========================================================================
 xbool player::ReloadWeapon( const new_weapon::ammo_priority& Priority, xbool bCheckAmmo )
 {
+    /* VR reloads are committed by inserting the magazine prop into the held
+     * weapon. Never let the legacy button or animation path refill it. */
+    if( IsVrAvatarMode() )
+        return FALSE;
+
     s32 ammoCount = 0;
     new_weapon* pWeapon = GetCurrentWeaponPtr();
     if( !pWeapon )
@@ -409,16 +414,18 @@ void player::SwitchWeapon2( inven_item WeaponItem )
         //set the state to ANIM_STATE_SWITCH_FROM
         SetAnimState( ANIM_STATE_SWITCH_FROM );
 
-        // turn off the flashlight
-        new_weapon* pWeapon = GetCurrentWeaponPtr();
-        if( !pWeapon || (!pWeapon->HasFlashlight()) )
+        if( !IsVrAvatarMode() )
         {
-            // weapon is invalid?  Turn off flashlight then
-            SetFlashlightActive(FALSE);            
-        }
-        else if( pWeapon->HasFlashlight() )
-        {
-            SetFlashlightActive(TRUE);
+            // The normal game light is attached to weapon-mounted sockets.
+            new_weapon* pWeapon = GetCurrentWeaponPtr();
+            if( !pWeapon || (!pWeapon->HasFlashlight()) )
+            {
+                SetFlashlightActive(FALSE);
+            }
+            else if( pWeapon->HasFlashlight() )
+            {
+                SetFlashlightActive(TRUE);
+            }
         }
     }
 }
@@ -842,7 +849,6 @@ void player::SetNextWeapon2( inven_item WeaponItem, xbool ForceSwitch, xbool Sta
 
     m_NextWeaponItem = WeaponItem;
 
-    // turn off the flashlight
     new_weapon* pWeapon = GetCurrentWeaponPtr();
     if( pWeapon )
     {
@@ -851,21 +857,17 @@ void player::SetNextWeapon2( inven_item WeaponItem, xbool ForceSwitch, xbool Sta
         // make sure we clear anything the weapon is doing
         pWeapon->BeginSwitchFrom();
     }
-    else
+    else if( !IsVrAvatarMode() )
     {
-        // weapon is invalid?  Turn off flashlight then
         SetFlashlightActive( FALSE );
     }
 
-    // Check weapon that's about to be the current weapon.
-    pWeapon = GetWeaponPtr( WeaponItem );
-    if( pWeapon )
+    if( !IsVrAvatarMode() )
     {
-        // this new weapon doesn't have a flashlight, turn it off
-        if( !pWeapon->HasFlashlight() )
-        {
+        // Check weapon that's about to be the current weapon.
+        pWeapon = GetWeaponPtr( WeaponItem );
+        if( pWeapon && !pWeapon->HasFlashlight() )
             SetFlashlightActive( FALSE );
-        }
     }
 
     if( StateChange && !m_bDead )

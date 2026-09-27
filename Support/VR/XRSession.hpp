@@ -37,6 +37,7 @@ struct vulkan_frame_info
 struct eye_view
 {
     f32 Position[3];
+    f32 HeadPosition[3];
     f32 Orientation[4];
     f32 FovLeft;
     f32 FovRight;
@@ -51,6 +52,61 @@ struct controller_pose
     f32 Position[3];
     f32 Orientation[4];
     xbool Valid;
+};
+
+struct body_joint_pose
+{
+    f32   Position[3];
+    f32   Orientation[4];
+    xbool PositionValid;
+    xbool OrientationValid;
+};
+
+enum : u32
+{
+    BODY_JOINT_ROOT = 0,
+    BODY_JOINT_HIPS,
+    BODY_JOINT_SPINE_LOWER,
+    BODY_JOINT_SPINE_MIDDLE,
+    BODY_JOINT_SPINE_UPPER,
+    BODY_JOINT_CHEST,
+    BODY_JOINT_NECK,
+    BODY_JOINT_HEAD,
+    BODY_JOINT_LEFT_SHOULDER,
+    BODY_JOINT_LEFT_SCAPULA,
+    BODY_JOINT_LEFT_UPPER_ARM,
+    BODY_JOINT_LEFT_LOWER_ARM,
+    BODY_JOINT_LEFT_WRIST_TWIST,
+    BODY_JOINT_RIGHT_SHOULDER,
+    BODY_JOINT_RIGHT_SCAPULA,
+    BODY_JOINT_RIGHT_UPPER_ARM,
+    BODY_JOINT_RIGHT_LOWER_ARM,
+    BODY_JOINT_RIGHT_WRIST_TWIST,
+    BODY_JOINT_UPPER_BODY_COUNT,
+    BODY_JOINT_LEFT_UPPER_LEG = 70,
+    BODY_JOINT_LEFT_LOWER_LEG,
+    BODY_JOINT_LEFT_ANKLE_TWIST,
+    BODY_JOINT_LEFT_ANKLE,
+    BODY_JOINT_LEFT_SUBTALAR,
+    BODY_JOINT_LEFT_TRANSVERSE,
+    BODY_JOINT_LEFT_FOOT_BALL,
+    BODY_JOINT_RIGHT_UPPER_LEG,
+    BODY_JOINT_RIGHT_LOWER_LEG,
+    BODY_JOINT_RIGHT_ANKLE_TWIST,
+    BODY_JOINT_RIGHT_ANKLE,
+    BODY_JOINT_RIGHT_SUBTALAR,
+    BODY_JOINT_RIGHT_TRANSVERSE,
+    BODY_JOINT_RIGHT_FOOT_BALL,
+    BODY_JOINT_FULL_BODY_COUNT = 84
+};
+
+struct body_tracking_pose
+{
+    body_joint_pose Joints[BODY_JOINT_FULL_BODY_COUNT];
+    f32             Confidence;
+    xbool           Valid;
+    xbool           HighFidelity;
+    xbool           FullBody;
 };
 
 enum class session_state : u8
@@ -81,6 +137,7 @@ public:
                                       xbool InGameplay );
     xbool           GetEyeView      ( u32 Eye, eye_view& View ) const;
     xbool           GetControllerPose( u32 Hand, controller_pose& Pose ) const;
+    xbool           GetBodyTrackingPose( body_tracking_pose& Pose );
     xbool           GetControllerFingerInput( u32 Hand, f32& Grip,
                                               f32& Trigger ) const;
     xbool           GetRightControllerFaceButtons( xbool& A,

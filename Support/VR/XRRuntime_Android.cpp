@@ -23,6 +23,11 @@
 namespace a51::xr
 {
 
+namespace
+{
+static xbool s_FullBodyTrackingExtensionEnabled = FALSE;
+}
+
 static xbool CheckResult( XrResult Result, const char* pOperation,
                           char* pError, s32 ErrorSize )
 {
@@ -81,10 +86,15 @@ xbool PlatformCreateInstance( const runtime_create_info& Info,
     if( !ppInstance )
         return FALSE;
 
+    s_FullBodyTrackingExtensionEnabled = FALSE;
+
     std::vector<const char*> Extensions = {
         XR_KHR_ANDROID_CREATE_INSTANCE_EXTENSION_NAME,
         XR_KHR_VULKAN_ENABLE2_EXTENSION_NAME,
     };
+    xbool HasBodyTrackingExtension = FALSE;
+    xbool HasBodyTrackingFidelityExtension = FALSE;
+    xbool HasFullBodyTrackingExtension = FALSE;
 
     // Request the Quest refresh-rate control only when the active OpenXR
     // runtime advertises it; unsupported runtimes must still start normally.
@@ -114,8 +124,26 @@ xbool PlatformCreateInstance( const runtime_create_info& Info,
                 if( std::strcmp( Extension.extensionName,
                                  XR_META_PERFORMANCE_METRICS_EXTENSION_NAME ) == 0 )
                     Extensions.push_back( XR_META_PERFORMANCE_METRICS_EXTENSION_NAME );
+                if( std::strcmp( Extension.extensionName,
+                                 XR_FB_BODY_TRACKING_EXTENSION_NAME ) == 0 )
+                    HasBodyTrackingExtension = TRUE;
+                if( std::strcmp( Extension.extensionName,
+                                 XR_META_BODY_TRACKING_FIDELITY_EXTENSION_NAME ) == 0 )
+                    HasBodyTrackingFidelityExtension = TRUE;
+                if( std::strcmp( Extension.extensionName,
+                                 XR_META_BODY_TRACKING_FULL_BODY_EXTENSION_NAME ) == 0 )
+                    HasFullBodyTrackingExtension = TRUE;
             }
         }
+    }
+    if( HasBodyTrackingExtension )
+        Extensions.push_back( XR_FB_BODY_TRACKING_EXTENSION_NAME );
+    if( HasBodyTrackingExtension && HasBodyTrackingFidelityExtension )
+        Extensions.push_back( XR_META_BODY_TRACKING_FIDELITY_EXTENSION_NAME );
+    if( HasBodyTrackingExtension && HasFullBodyTrackingExtension )
+    {
+        Extensions.push_back( XR_META_BODY_TRACKING_FULL_BODY_EXTENSION_NAME );
+        s_FullBodyTrackingExtensionEnabled = TRUE;
     }
 
     XrInstanceCreateInfoAndroidKHR AndroidInfo{
@@ -154,6 +182,11 @@ xbool PlatformCreateInstance( const runtime_create_info& Info,
 
     *ppInstance = reinterpret_cast<void*>( Instance );
     return TRUE;
+}
+
+xbool PlatformHasFullBodyTrackingExtension( void )
+{
+    return s_FullBodyTrackingExtensionEnabled;
 }
 
 void PlatformDestroyInstance( void* pInstance )

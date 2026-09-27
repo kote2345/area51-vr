@@ -283,6 +283,20 @@ struct VulkanSession::Impl
     XrAction RightGripPoseAction = XR_NULL_HANDLE;
     XrSpace LeftGripPoseSpace = XR_NULL_HANDLE;
     XrSpace RightGripPoseSpace = XR_NULL_HANDLE;
+#if defined(TARGET_ANDROID)
+    XrBodyTrackerFB BodyTracker = XR_NULL_HANDLE;
+    PFN_xrCreateBodyTrackerFB CreateBodyTracker = NULL;
+    PFN_xrDestroyBodyTrackerFB DestroyBodyTracker = NULL;
+    PFN_xrLocateBodyJointsFB LocateBodyJoints = NULL;
+    PFN_xrRequestBodyTrackingFidelityMETA RequestBodyTrackingFidelity = NULL;
+    xbool BodyTrackingHighRequested = FALSE;
+    xbool BodyTrackingFullBody = FALSE;
+    XrBodyTrackingFidelityMETA LastBodyTrackingFidelity =
+        XR_BODY_TRACKING_FIDELITY_LOW_META;
+    xbool BodyTrackingFidelityLogged = FALSE;
+#endif
+    body_tracking_pose BodyPoseCache{};
+    xbool BodyPoseSampled = FALSE;
     XrPath LeftHandPath = XR_NULL_PATH;
     XrPath RightHandPath = XR_NULL_PATH;
     xbool InputActionsReady = FALSE;
@@ -612,6 +626,99 @@ xbool VulkanSession::InitializeInternal( Runtime& RuntimeObject )
     }
 
 #if defined(TARGET_ANDROID)
+    /* Body tracking is optional: runtimes without the extension retain the
+     * existing controller IK and continue to start the game normally. */
+    PFN_xrVoidFunction BodyFunction = NULL;
+    if( XR_SUCCEEDED( xrGetInstanceProcAddr(
+            m_pImpl->Instance, "xrCreateBodyTrackerFB", &BodyFunction ) ) &&
+        BodyFunction )
+        m_pImpl->CreateBodyTracker = reinterpret_cast<
+            PFN_xrCreateBodyTrackerFB>( BodyFunction );
+    BodyFunction = NULL;
+    if( XR_SUCCEEDED( xrGetInstanceProcAddr(
+            m_pImpl->Instance, "xrDestroyBodyTrackerFB", &BodyFunction ) ) &&
+        BodyFunction )
+        m_pImpl->DestroyBodyTracker = reinterpret_cast<
+            PFN_xrDestroyBodyTrackerFB>( BodyFunction );
+    BodyFunction = NULL;
+    if( XR_SUCCEEDED( xrGetInstanceProcAddr(
+            m_pImpl->Instance, "xrLocateBodyJointsFB", &BodyFunction ) ) &&
+        BodyFunction )
+        m_pImpl->LocateBodyJoints = reinterpret_cast<
+            PFN_xrLocateBodyJointsFB>( BodyFunction );
+    BodyFunction = NULL;
+    if( XR_SUCCEEDED( xrGetInstanceProcAddr(
+            m_pImpl->Instance, "xrRequestBodyTrackingFidelityMETA",
+            &BodyFunction ) ) && BodyFunction )
+        m_pImpl->RequestBodyTrackingFidelity = reinterpret_cast<
+            PFN_xrRequestBodyTrackingFidelityMETA>( BodyFunction );
+
+    if( m_pImpl->CreateBodyTracker && m_pImpl->DestroyBodyTracker &&
+        m_pImpl->LocateBodyJoints )
+    {
+        XrSystemBodyTrackingPropertiesFB BodyProperties{
+            XR_TYPE_SYSTEM_BODY_TRACKING_PROPERTIES_FB };
+        XrSystemPropertiesBodyTrackingFullBodyMETA FullBodyProperties{
+            XR_TYPE_SYSTEM_PROPERTIES_BODY_TRACKING_FULL_BODY_META };
+        if( PlatformHasFullBodyTrackingExtension() )
+            BodyProperties.next = &FullBodyProperties;
+        XrSystemProperties SystemProperties{ XR_TYPE_SYSTEM_PROPERTIES };
+        SystemProperties.next = &BodyProperties;
+        const xbool SupportsBodyTracking =
+            XR_SUCCEEDED( xrGetSystemProperties( m_pImpl->Instance,
+                m_pImpl->SystemId, &SystemProperties ) ) &&
+            BodyProperties.supportsBodyTracking;
+        if( SupportsBodyTracking )
+        {
+            XrBodyTrackerCreateInfoFB BodyCreateInfo{
+                XR_TYPE_BODY_TRACKER_CREATE_INFO_FB };
+            const xbool RequestFullBody =
+                PlatformHasFullBodyTrackingExtension() &&
+                FullBodyProperties.supportsFullBodyTracking;
+            BodyCreateInfo.bodyJointSet = RequestFullBody
+                ? XR_BODY_JOINT_SET_FULL_BODY_META
+                : XR_BODY_JOINT_SET_DEFAULT_FB;
+            XrResult CreateResult = m_pImpl->CreateBodyTracker(
+                m_pImpl->Session, &BodyCreateInfo, &m_pImpl->BodyTracker );
+            if( XR_FAILED( CreateResult ) && RequestFullBody )
+            {
+                // Keep upper-body tracking working on runtimes whose full
+                // body extension is advertised but cannot create this set.
+                BodyCreateInfo.bodyJointSet = XR_BODY_JOINT_SET_DEFAULT_FB;
+                CreateResult = m_pImpl->CreateBodyTracker(
+                    m_pImpl->Session, &BodyCreateInfo,
+                    &m_pImpl->BodyTracker );
+            }
+            if( XR_SUCCEEDED( CreateResult ) && m_pImpl->BodyTracker )
+            {
+                m_pImpl->BodyTrackingFullBody = RequestFullBody &&
+                    ( BodyCreateInfo.bodyJointSet ==
+                      XR_BODY_JOINT_SET_FULL_BODY_META );
+                if( m_pImpl->RequestBodyTrackingFidelity )
+                {
+                    const XrResult FidelityResult =
+                        m_pImpl->RequestBodyTrackingFidelity(
+                            m_pImpl->BodyTracker,
+                            XR_BODY_TRACKING_FIDELITY_HIGH_META );
+                    m_pImpl->BodyTrackingHighRequested =
+                        XR_SUCCEEDED( FidelityResult );
+                }
+                x_DebugMsg( "OpenXR body tracking: active highRequest=%d fullBody=%d\n",
+                    m_pImpl->BodyTrackingHighRequested ? 1 : 0,
+                    m_pImpl->BodyTrackingFullBody ? 1 : 0 );
+            }
+            else
+            {
+                x_DebugMsg( "OpenXR body tracking: tracker creation failed result=%d\n",
+                    static_cast<int>( CreateResult ) );
+            }
+        }
+        else
+        {
+            x_DebugMsg( "OpenXR body tracking: system reports unsupported\n" );
+        }
+    }
+
     // Quest exposes app/compositor timing, utilization, frequencies and other
     // counters through META_performance_metrics. Probe each entry point so an
     // unsupported runtime continues without changing session startup.
@@ -1318,6 +1425,10 @@ void VulkanSession::Shutdown( void )
         xrDestroySpace( m_pImpl->LeftGripPoseSpace );
     if( m_pImpl->RightGripPoseSpace )
         xrDestroySpace( m_pImpl->RightGripPoseSpace );
+#if defined(TARGET_ANDROID)
+    if( m_pImpl->BodyTracker && m_pImpl->DestroyBodyTracker )
+        m_pImpl->DestroyBodyTracker( m_pImpl->BodyTracker );
+#endif
     if( m_pImpl->LeftStickAction )
         xrDestroyAction( m_pImpl->LeftStickAction );
     if( m_pImpl->RightStickAction )
@@ -1895,6 +2006,7 @@ xbool VulkanSession::BeginFrame( void )
                 return FALSE;
     }
     m_pImpl->FrameBegun = TRUE;
+    m_pImpl->BodyPoseSampled = FALSE;
 
 #if defined(TARGET_ANDROID)
     if( m_pImpl->QueryPerformanceCounter && !m_pImpl->PerformanceCounters.empty() )
@@ -2022,13 +2134,22 @@ xbool VulkanSession::GetEyeView( u32 Eye, eye_view& View ) const
                                               XRView.pose )
                               : XRView.pose;
 
-    /* Return the relative pose, exactly like Simpsons' ComposeTrackedCamera.
-     * The game camera consumes this pose once; the compositor still receives
-     * the original absolute XrView pose in PrepareStereoFrame(). */
-    /* Area 51 currently runs the headset camera in 3DoF mode. Do not feed
-     * the headset's absolute/room-scale translation into the game camera;
-     * only the physical eye separation is needed here. The eye offset is
-     * rotated with RelativeEye.orientation by the game camera composition. */
+    /* Preserve the room-scale head translation relative to the yaw-aligned
+     * origin captured at session start. The avatar supplies the base eye
+     * height; this delta adds the user's real lean and head movement on top. */
+    const XrPosef CentreView = CentreYawAnchor(
+        m_pImpl->Views[0],
+        m_pImpl->Views.size() > 1 ? m_pImpl->Views[1]
+                                  : m_pImpl->Views[0] );
+    const XrPosef RelativeCentre = m_pImpl->TrackingOriginValid
+        ? RelativePose( m_pImpl->TrackingOrigin, CentreView )
+        : CentreView;
+    View.HeadPosition[0] = RelativeCentre.position.x;
+    View.HeadPosition[1] = RelativeCentre.position.y;
+    View.HeadPosition[2] = RelativeCentre.position.z;
+
+    /* Keep the established per-eye IPD offset separate from the common head
+     * translation. Its local offset is rotated by the camera orientation. */
     /* Area 51's view space is left-handed relative to OpenXR's horizontal
      * axis: +X is Camera Left here, while +X is Camera Right in OpenXR.
      * Map the eye baseline into the game camera convention before RenderGame
@@ -2139,6 +2260,117 @@ xbool VulkanSession::GetControllerPose( u32 Hand,
     }
     Pose.Valid = TRUE;
     return TRUE;
+}
+
+xbool VulkanSession::GetBodyTrackingPose( body_tracking_pose& Pose )
+{
+    Pose = {};
+#if defined(TARGET_ANDROID)
+    if( !m_pImpl || !m_pImpl->BodyTracker || !m_pImpl->LocateBodyJoints ||
+        !m_pImpl->SessionRunning || !m_pImpl->FrameBegun ||
+        !m_pImpl->Space || m_pImpl->Views.empty() )
+    {
+        return FALSE;
+    }
+
+    if( !m_pImpl->BodyPoseSampled )
+    {
+        m_pImpl->BodyPoseCache = {};
+        XrBodyJointLocationFB JointLocations[
+            XR_FULL_BODY_JOINT_COUNT_META] = {};
+        XrBodyJointsLocateInfoFB LocateInfo{
+            XR_TYPE_BODY_JOINTS_LOCATE_INFO_FB };
+        LocateInfo.baseSpace = m_pImpl->Space;
+        LocateInfo.time = m_pImpl->PreparedFrameState.predictedDisplayTime;
+
+        XrBodyTrackingFidelityStatusMETA FidelityStatus{
+            XR_TYPE_BODY_TRACKING_FIDELITY_STATUS_META };
+        XrBodyJointLocationsFB Locations{
+            XR_TYPE_BODY_JOINT_LOCATIONS_FB };
+        if( m_pImpl->RequestBodyTrackingFidelity )
+            Locations.next = &FidelityStatus;
+        Locations.jointCount = m_pImpl->BodyTrackingFullBody
+            ? XR_FULL_BODY_JOINT_COUNT_META
+            : XR_BODY_JOINT_COUNT_FB;
+        Locations.jointLocations = JointLocations;
+
+        if( XR_SUCCEEDED( m_pImpl->LocateBodyJoints(
+                              m_pImpl->BodyTracker, &LocateInfo,
+                              &Locations ) ) && Locations.isActive )
+        {
+            XrPosef HeadPose = m_pImpl->Views[0].pose;
+            if( m_pImpl->Views.size() > 1 )
+            {
+                HeadPose.position.x =
+                    ( m_pImpl->Views[0].pose.position.x +
+                      m_pImpl->Views[1].pose.position.x ) * 0.5f;
+                HeadPose.position.y =
+                    ( m_pImpl->Views[0].pose.position.y +
+                      m_pImpl->Views[1].pose.position.y ) * 0.5f;
+                HeadPose.position.z =
+                    ( m_pImpl->Views[0].pose.position.z +
+                      m_pImpl->Views[1].pose.position.z ) * 0.5f;
+            }
+
+            m_pImpl->BodyPoseCache.Confidence = Locations.confidence;
+            m_pImpl->BodyPoseCache.HighFidelity =
+                m_pImpl->RequestBodyTrackingFidelity &&
+                ( FidelityStatus.fidelity ==
+                  XR_BODY_TRACKING_FIDELITY_HIGH_META );
+            m_pImpl->BodyPoseCache.FullBody =
+                m_pImpl->BodyTrackingFullBody;
+            m_pImpl->BodyPoseCache.Valid =
+                Locations.confidence > 0.0f;
+
+            const u32 JointCount = m_pImpl->BodyTrackingFullBody
+                ? XR_FULL_BODY_JOINT_COUNT_META
+                : XR_BODY_JOINT_COUNT_FB;
+            for( u32 Joint = 0; Joint < JointCount; ++Joint )
+            {
+                const XrBodyJointLocationFB& Source =
+                    JointLocations[Joint];
+                body_joint_pose& Target =
+                    m_pImpl->BodyPoseCache.Joints[Joint];
+                Target.PositionValid =
+                    ( Source.locationFlags &
+                      XR_SPACE_LOCATION_POSITION_VALID_BIT ) != 0;
+                Target.OrientationValid =
+                    ( Source.locationFlags &
+                      XR_SPACE_LOCATION_ORIENTATION_VALID_BIT ) != 0;
+                if( !Target.PositionValid )
+                    continue;
+
+                const XrPosef Relative = RelativePose( HeadPose,
+                                                       Source.pose );
+                Target.Position[0] = Relative.position.x;
+                Target.Position[1] = Relative.position.y;
+                Target.Position[2] = Relative.position.z;
+                Target.Orientation[0] = Relative.orientation.x;
+                Target.Orientation[1] = Relative.orientation.y;
+                Target.Orientation[2] = Relative.orientation.z;
+                Target.Orientation[3] = Relative.orientation.w;
+            }
+
+            if( m_pImpl->RequestBodyTrackingFidelity &&
+                ( !m_pImpl->BodyTrackingFidelityLogged ||
+                  ( m_pImpl->LastBodyTrackingFidelity !=
+                    FidelityStatus.fidelity ) ) )
+            {
+                m_pImpl->LastBodyTrackingFidelity = FidelityStatus.fidelity;
+                m_pImpl->BodyTrackingFidelityLogged = TRUE;
+                x_DebugMsg( "OpenXR body tracking fidelity: %s confidence=%.2f\n",
+                    m_pImpl->BodyPoseCache.HighFidelity ? "high" : "low",
+                    Locations.confidence );
+            }
+        }
+        m_pImpl->BodyPoseSampled = TRUE;
+    }
+
+    Pose = m_pImpl->BodyPoseCache;
+    return Pose.Valid;
+#else
+    return FALSE;
+#endif
 }
 
 xbool VulkanSession::GetControllerFingerInput( u32 Hand, f32& Grip,

@@ -716,7 +716,8 @@ void player::HandleFireInput( xbool IsAlternateFire )
     }
     else
     {
-        if( pWeapon->CanReload( pWeapon->GetPrimaryAmmoPriority() ) )
+        if( !IsVrAvatarMode() &&
+            pWeapon->CanReload( pWeapon->GetPrimaryAmmoPriority() ) )
         {
             SetAnimState( ANIM_STATE_RELOAD );
         }
@@ -3061,6 +3062,9 @@ void player::EndZoomFire( void )
 
 void player::SetAnimState( animation_state AnimState )
 {
+    if( IsVrAvatarMode() && ( AnimState == ANIM_STATE_RELOAD ) )
+        AnimState = GetMotionTransitionAnimState();
+
     PlayerAnimationTransition<animation_state> const Transition =
         m_AnimationDispatcher.Resolve( m_CurrentAnimState,
                                        AnimState,

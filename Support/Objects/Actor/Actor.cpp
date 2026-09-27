@@ -4407,7 +4407,7 @@ const matrix4* actor::GetBonesForRender( u64 LODMask, s32& nActiveBones )
     {
         player& Player = player::GetSafeType( *this );
         pMatrices = Player.ApplyVrArmIK( pMatrices, nActiveBones );
-        Player.UpdateVrPistolAttachment( pMatrices, nActiveBones );
+        Player.UpdateVrWeaponAttachment( pMatrices, nActiveBones );
         pMatrices = Player.ApplyVrHeadVisibility( pMatrices, nActiveBones );
     }
 #endif

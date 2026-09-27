@@ -1263,16 +1263,18 @@ xbool player::GetVrHeldWeaponShot( new_weapon* pWeapon,
                                     radian3& Rotation )
 {
 #if defined( A51_ENABLE_OPENXR )
-    if( !IsVrAvatarMode() || !pWeapon ||
-        pWeapon->GetInvenItem() != m_CurrentWeaponItem ||
-        ( m_VrHeldWeapon[0] != m_CurrentWeaponItem &&
-          m_VrHeldWeapon[1] != m_CurrentWeaponItem ) )
+    if( !IsVrAvatarMode() || !pWeapon )
+        return FALSE;
+
+    const inven_item Item = pWeapon->GetInvenItem();
+    if( m_VrHeldWeapon[0] != Item && m_VrHeldWeapon[1] != Item &&
+        !( ( Item == INVEN_WEAPON_SCANNER ) && m_VrScannerActive ) )
         return FALSE;
 
     /* The single-gun animation can emit a right-hand fire event, but the
      * world pistol has one barrel and uses its default firepoint. */
-    if( m_CurrentWeaponItem != INVEN_WEAPON_DUAL_SMP &&
-        m_CurrentWeaponItem != INVEN_WEAPON_DUAL_SHT )
+    if( Item != INVEN_WEAPON_DUAL_SMP &&
+        Item != INVEN_WEAPON_DUAL_SHT )
         iFirePoint = new_weapon::FIRE_POINT_DEFAULT;
 
     vector3 Direction;

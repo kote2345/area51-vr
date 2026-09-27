@@ -86,6 +86,10 @@ void player_hud::OnRender( void )
         s32 i;
         for( i = 0; i < HUD_ELEMENT_NUM_ELEMENTS; i++ )
         {
+            if( pPlayer->IsVrAvatarMode() &&
+                ( i == HUD_ELEMENT_RETICLE || i == HUD_ELEMENT_AMMO_BAR ) )
+                continue;
+
             m_HudComponents[ i ]->OnRender( pPlayer );
         }
 

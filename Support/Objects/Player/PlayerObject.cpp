@@ -262,6 +262,20 @@ player::player( void ) :
     m_VrShownShotValid = FALSE;
     m_VrPendingPickupWeapon = INVEN_NULL;
     m_VrPendingPickupHand = -1;
+    m_VrAmmoVisualItem = INVEN_NULL;
+    m_VrTestWeaponsGranted = FALSE;
+    m_VrScannerActive = FALSE;
+    m_VrRoomScalePreviousAnchorPosition.Zero();
+    m_VrRoomScaleHeadOffsetReference.Zero();
+    m_VrRoomScaleCameraOffset.Zero();
+    m_VrRoomScalePositionValid = FALSE;
+    m_VrRoomScaleUsesBodyTracking = FALSE;
+    m_bVrButtonCrouching = FALSE;
+    m_bVrPhysicalCrouching = FALSE;
+    m_VrStandingHipHeightValid = FALSE;
+    m_VrStandingHipHeight = 0.0f;
+    m_VrFilteredHipHeight = 0.0f;
+    m_VrPhysicalCrouchFactor = 0.0f;
     m_VrPreviousRightA = FALSE;
     m_VrPreviousRightB = FALSE;
 
@@ -269,6 +283,7 @@ player::player( void ) :
 
     for( i = 0; i < INVEN_NUM_WEAPONS; ++i )
     {
+        m_VrTestWeaponAmmoGranted[i] = FALSE;
         m_VrWeaponRuntime[i].State = VR_WEAPON_HOLSTERED;
         m_VrWeaponRuntime[i].Hand = -1;
         m_VrWeaponRuntime[i].ReturnTimer = 0.0f;
@@ -286,9 +301,13 @@ player::player( void ) :
         m_VrGripAmount[i] = 0.0f;
         m_VrTriggerAmount[i] = 0.0f;
         m_VrPreviousGrip[i] = 0.0f;
+        m_VrFireCooldown[i] = 0.0f;
         m_VrControllerVelocity[i].Zero();
         m_VrPreviousControllerPosition[i].Zero();
         m_VrControllerPositionValid[i] = FALSE;
+        m_VrCollisionHandTransform[i].Identity();
+        m_VrCollisionHandTransformValid[i] = FALSE;
+        m_VrAmmoHandWeapon[i] = INVEN_NULL;
     }
 
     SetIsActive( TRUE );

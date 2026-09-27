@@ -111,6 +111,11 @@ public:
                                               xbool             bIsAirborn,
                                               xbool             bIsCrouching,
                                               f32               Lean );
+            void        SetVrStickAnimationInput( xbool bEnabled,
+                                                  xbool bStickMoving,
+                                                  const vector3& Delta );
+            xbool       IsVrStickAnimationMoving( void ) const
+                        { return m_bUseVrStickAnimationInput && m_bVrStickMoving; }
                                               
 #if !defined( CONFIG_RETAIL )
     // Renders debug info
@@ -148,6 +153,9 @@ protected:
     player_loco_idle                m_Idle;                 // Idle anim state
     player_loco_move                m_Move;                 // Move anim state
     inven_item                      m_CurrentWeaponAnims;   // Current weapon anims that are being used
+    vector3                         m_VrStickAnimationDelta;
+    xbool                           m_bUseVrStickAnimationInput;
+    xbool                           m_bVrStickMoving;
     
     // IK vars (used to correctly position the left hand on the weapon)
     loco_ik_solver                  m_IKSolver;             // IK solver for left arm

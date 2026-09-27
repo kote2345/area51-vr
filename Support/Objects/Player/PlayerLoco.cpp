@@ -111,6 +111,9 @@ m_Move    ( *this )
 {
     x_memset( &m_MPAnimIndex[0], -1, sizeof( m_MPAnimIndex ) );
     m_CurrentWeaponAnims = INVEN_NULL;
+    m_VrStickAnimationDelta.Zero();
+    m_bUseVrStickAnimationInput = FALSE;
+    m_bVrStickMoving = FALSE;
 }
 
 //==============================================================================
@@ -927,7 +930,11 @@ void player_loco::UpdateAnims( f32                  DeltaTime,
     loco::move_style_anim   MoveStyleAnim = GetCurrentMoveStyleAnim();
 
     // Compute horiz movement speed
-    const vector3& DeltaPos = GetDeltaPos();
+    const vector3& DeltaPos = m_bUseVrStickAnimationInput
+                            ? m_VrStickAnimationDelta
+                            : GetDeltaPos();
+    if( m_bUseVrStickAnimationInput && !m_bVrStickMoving )
+        Lean = 0.0f;
     f32 Speed = x_sqr( DeltaPos.GetX() ) + x_sqr( DeltaPos.GetZ() );
     if( Speed > 0.0001f ) 
         Speed = x_sqrt( Speed );
@@ -1100,6 +1107,17 @@ void player_loco::UpdateAnims( f32                  DeltaTime,
     // Finally, update aimer and IK
     m_AimController.SetWeight( AimerWeight );
     m_IKSolver.SetWeight( IKWeight );
+}
+
+//==============================================================================
+
+void player_loco::SetVrStickAnimationInput( xbool bEnabled,
+                                            xbool bStickMoving,
+                                            const vector3& Delta )
+{
+    m_bUseVrStickAnimationInput = bEnabled;
+    m_bVrStickMoving = bEnabled && bStickMoving;
+    m_VrStickAnimationDelta = m_bVrStickMoving ? Delta : vector3( 0.0f, 0.0f, 0.0f );
 }
 
 //==============================================================================
